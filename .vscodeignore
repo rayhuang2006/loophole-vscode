@@ -8,3 +8,4 @@ images/logo.svg
 .gitignore
 .vscodeignore
 CONTRIBUTING.md
+loophole-*.vsix

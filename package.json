@@ -1,14 +1,23 @@
 {
   "name": "loophole",
   "displayName": "Loophole",
-  "description": "Syntax highlighting for the wish and genie languages.",
-  "version": "0.1.0",
+  "description": "Syntax highlighting and inline diagnostics for the wish and genie languages.",
+  "version": "0.2.0",
   "publisher": "rayhuang2006",
   "license": "MIT",
   "icon": "images/icon.png",
-  "engines": { "vscode": "^1.75.0" },
-  "categories": ["Programming Languages"],
-  "keywords": ["loophole", "wish", "genie"],
+  "engines": {
+    "vscode": "^1.75.0"
+  },
+  "categories": [
+    "Programming Languages",
+    "Linters"
+  ],
+  "keywords": [
+    "loophole",
+    "wish",
+    "genie"
+  ],
   "repository": {
     "type": "git",
     "url": "https://github.com/rayhuang2006/loophole-vscode"
@@ -18,30 +27,53 @@
     "languages": [
       {
         "id": "wish",
-        "aliases": ["Wish", "wish"],
-        "extensions": [".wish"],
+        "aliases": [
+          "Wish",
+          "wish"
+        ],
+        "extensions": [
+          ".wish"
+        ],
         "configuration": "./language-configuration.json"
       },
       {
         "id": "genie",
-        "aliases": ["Genie", "genie"],
-        "extensions": [".genie"],
+        "aliases": [
+          "Genie",
+          "genie"
+        ],
+        "extensions": [
+          ".genie"
+        ],
         "configuration": "./language-configuration.json"
       }
     ],
     "grammars": [
-      { "language": "wish",  "scopeName": "source.wish",  "path": "./syntaxes/wish.tmLanguage.json" },
-      { "language": "genie", "scopeName": "source.genie", "path": "./syntaxes/genie.tmLanguage.json" }
+      {
+        "language": "wish",
+        "scopeName": "source.wish",
+        "path": "./syntaxes/wish.tmLanguage.json"
+      },
+      {
+        "language": "genie",
+        "scopeName": "source.genie",
+        "path": "./syntaxes/genie.tmLanguage.json"
+      }
     ]
   },
   "scripts": {
     "keywords": "node tools/fetch-keywords.mjs",
+    "wasm": "node tools/fetch-wasm.mjs",
     "gen": "node tools/gen-grammars.mjs",
-    "test": "node tools/grammar-check.mjs",
+    "test": "node tools/grammar-check.mjs && node tools/diagnostics-check.mjs && node tools/extension-check.mjs",
     "check": "npm run gen && git diff --exit-code syntaxes/ && npm test"
   },
   "devDependencies": {
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.0.0"
-  }
+  },
+  "main": "./src/extension.js",
+  "activationEvents": [
+    "onLanguage:wish"
+  ]
 }

@@ -30,7 +30,36 @@ jobs:
           }
 
       - name: VS Code's own tokeniser must colour every reserved word
+        # `npm test` also drives `activate()` against a stub of the editor API,
+        # using the real compiler. Both are needed and neither replaces the
+        # other: the grammar has to survive a half-typed file, and the compiler's
+        # job on a half-typed file is to refuse it.
         run: npm test
+
+      - name: The bundled compiler must be a published one
+        # The `.vsix` carries a WebAssembly compiler, and it is the only file
+        # here that cannot be regenerated locally -- building it needs emsdk. So
+        # the check is that the committed bytes are the released bytes, byte for
+        # byte. Anything else means somebody shipped a compiler nobody can point
+        # at a tag for.
+        run: |
+          npm run wasm
+          git diff --exit-code wasm/ || {
+            echo "::error::wasm/ is not the latest released build. Run 'npm run wasm' and commit, or pin deliberately."
+            exit 1
+          }
+
+      - name: The package must actually build
+        # Catches the failure mode nothing above can see: a file the extension
+        # needs at runtime being excluded from the archive. `.vscodeignore` is a
+        # list of things NOT to ship, and getting it wrong produces an extension
+        # that installs cleanly and does nothing.
+        run: |
+          npx --yes @vscode/vsce package -o /tmp/x.vsix
+          for f in wasm/loophole.js wasm/loophole.wasm src/extension.js src/verdict.js; do
+            unzip -l /tmp/x.vsix | grep -q "extension/$f" || {
+              echo "::error::$f is missing from the .vsix"; exit 1; }
+          done
 
       - name: Is the language ahead of us?
         # Advisory. The grammar tracks a released language version on purpose,
