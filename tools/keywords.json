@@ -1,0 +1,60 @@
+{
+  "wish": [
+    "register",
+    "attribute",
+    "people",
+    "wish",
+    "define",
+    "promise",
+    "uint"
+  ],
+  "genie": [
+    "counter",
+    "toll",
+    "concept",
+    "rule",
+    "invariant",
+    "layer",
+    "forbid",
+    "on",
+    "because",
+    "check",
+    "written",
+    "real",
+    "label"
+  ],
+  "operations": [
+    "sub",
+    "add",
+    "widen",
+    "set",
+    "kill",
+    "revive"
+  ],
+  "layers": [
+    "surface",
+    "ast"
+  ],
+  "expressions": [
+    "all",
+    "in",
+    "not",
+    "and",
+    "or",
+    "implies",
+    "granted",
+    "alive",
+    "self",
+    "consistent",
+    "max",
+    "before",
+    "true",
+    "false"
+  ],
+  "comment": "#",
+  "type": "uint<N>",
+  "languages": {
+    "wish": "1.0",
+    "genie": "1.0"
+  }
+}

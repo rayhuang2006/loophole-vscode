@@ -1,0 +1,43 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  # Weekly, so a keyword added to the language upstream shows up here without
+  # anybody remembering to look. The extension pins a released language version,
+  # but a release it has not caught up with is exactly what goes unnoticed.
+  schedule:
+    - cron: '0 6 * * 1'
+
+jobs:
+  grammars:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npm ci
+
+      - name: The committed grammars must be what the generator produces
+        # They are generated, so there is nothing to check by hand -- the check
+        # is that nobody edited the output instead of the generator.
+        run: |
+          npm run gen
+          git diff --exit-code syntaxes/ || {
+            echo "::error::syntaxes/ is not what tools/gen-grammars.mjs produces. Run 'npm run gen' and commit."
+            exit 1
+          }
+
+      - name: VS Code's own tokeniser must colour every reserved word
+        run: npm test
+
+      - name: Is the language ahead of us?
+        # Advisory. The grammar tracks a released language version on purpose,
+        # so being behind is not a failure -- but it should be visible.
+        continue-on-error: true
+        run: |
+          node tools/fetch-keywords.mjs
+          git diff --exit-code tools/keywords.json || {
+            echo "::warning::the published compiler reserves different words. Run 'npm run keywords && npm run gen'."
+          }

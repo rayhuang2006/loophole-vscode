@@ -1,0 +1,9 @@
+# Only what the editor loads gets shipped. The generator, its input and the
+# tokeniser tests are how the grammars are produced and trusted -- they are not
+# part of the extension.
+.github/**
+tools/**
+node_modules/**
+images/logo.svg
+.gitignore
+.vscodeignore
