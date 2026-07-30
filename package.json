@@ -2,7 +2,7 @@
   "name": "loophole",
   "displayName": "Loophole",
   "description": "Syntax highlighting and inline diagnostics for the wish and genie languages.",
-  "version": "0.2.0",
+  "version": "0.3.0",
   "publisher": "rayhuang2006",
   "license": "MIT",
   "icon": "images/icon.png",

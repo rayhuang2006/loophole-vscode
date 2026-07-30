@@ -9,6 +9,12 @@
 // The severity policy -- and it is not the obvious one -- lives in `verdict.js`,
 // which has no dependency on VS Code so it can be checked without an editor.
 // This file is glue: read the files, call the compiler, place the ranges.
+//
+// Each file owns its own gutter. A `.genie` is checked on its own (`checkGenie`)
+// and carries its own syntax errors. A `.wish` is judged, and when the genie it
+// names cannot be read, the wish says so on its own `# genie:` line -- it never
+// draws that error on the genie's behalf. Two files, two owners, no fighting
+// over one line.
 
 const vscode = require('vscode');
 const path = require('path');
@@ -17,7 +23,7 @@ const { toDiagnostics, GENIE } = require('./verdict.js');
 /** Milliseconds of quiet before a keystroke turns into a judgment. */
 const SETTLE = 250;
 
-/** The compiler module, loaded once, lazily, and only if a .wish is opened. */
+/** The compiler module, loaded once, lazily, and only if a file needs it. */
 let compiler = null;
 function load(context) {
   if (!compiler) {
@@ -37,7 +43,8 @@ function load(context) {
 // `make run` reads the same line to decide what to load. Following it means a
 // file the terminal judges one way is not judged another way here. With no such
 // line the compiler's built-in genie applies, which is what an empty string
-// means to `judge`.
+// means to `judge` -- and the built-in genie always parses, so a wish using it
+// can never see a genie error.
 // ---------------------------------------------------------------------------
 const GENIE_LINE = /^[ \t]*#[ \t]*genie:[ \t]*(\S+)/m;
 
@@ -49,17 +56,21 @@ async function genieFor(doc) {
   const m = GENIE_LINE.exec(text);
   if (!m) return { text: '', uri: null };
 
+  const directiveLine = doc.positionAt(m.index).line;
   const fsPath = path.resolve(path.dirname(doc.uri.fsPath), m[1]);
   // An open editor's unsaved buffer beats what is on disk. Editing a genie
   // should move the squiggles in the wish immediately -- reading the saved file
   // instead would leave the two panes disagreeing about the same moment.
   const open = openDoc(fsPath);
-  if (open) return { text: open.getText(), uri: open.uri };
+  if (open) return { text: open.getText(), uri: open.uri, directiveLine };
   try {
     const bytes = await vscode.workspace.fs.readFile(vscode.Uri.file(fsPath));
-    return { text: Buffer.from(bytes).toString('utf8'), uri: vscode.Uri.file(fsPath) };
+    return {
+      text: Buffer.from(bytes).toString('utf8'),
+      uri: vscode.Uri.file(fsPath), directiveLine,
+    };
   } catch {
-    return { missing: m[1], line: doc.positionAt(m.index).line };
+    return { missing: m[1], directiveLine };
   }
 }
 
@@ -84,6 +95,20 @@ function rangeOf(doc, d) {
   return new vscode.Range(line, from, line, Math.max(text.trimEnd().length, from + 1));
 }
 
+const SEVERITY = {
+  error: vscode.DiagnosticSeverity.Error,
+  warning: vscode.DiagnosticSeverity.Warning,
+  info: vscode.DiagnosticSeverity.Information,
+};
+
+function toVsDiagnostic(doc, d) {
+  const v = new vscode.Diagnostic(
+    rangeOf(doc, d), d.message, SEVERITY[d.severity] ?? SEVERITY.info);
+  v.source = 'loophole';
+  if (d.code) v.code = d.code;
+  return v;
+}
+
 function activate(context) {
   const bag = vscode.languages.createDiagnosticCollection('loophole');
   context.subscriptions.push(bag);
@@ -94,12 +119,9 @@ function activate(context) {
   const dependsOn = new Map();
   let announcedFailure = false;
 
-  async function judge(doc) {
-    if (doc.languageId !== 'wish') return;
-
-    let M;
+  async function loadOrWarn() {
     try {
-      M = await load(context);
+      return await load(context);
     } catch (err) {
       // Once, not once per keystroke. And loudly: silence here would look
       // exactly like a clean file, which is the worst possible lie to tell.
@@ -109,46 +131,74 @@ function activate(context) {
         vscode.window.showErrorMessage(
           'Loophole: the compiler failed to load, so diagnostics are off.');
       }
-      return;
+      return null;
     }
+  }
+
+  function judge(doc) {
+    if (doc.languageId === 'genie') return judgeGenie(doc);
+    if (doc.languageId === 'wish') return judgeWish(doc);
+  }
+
+  // A genie on its own. No wish is involved, so this is a syntax check and only
+  // that -- exactly what the compiler's `--check-genie` reports. Its whole
+  // reason to exist: a genie a person is still writing, that no wish has run yet,
+  // used to be able to hold a plain syntax error in silence.
+  async function judgeGenie(doc) {
+    const M = await loadOrWarn();
+    if (!M) return;
+
+    let r;
+    try { r = M.checkGenie(doc.getText()); }
+    catch (err) { console.error('loophole: checkGenie threw', err); return; }
+
+    let json = null;
+    try { json = JSON.parse(r.json); } catch { /* nothing to report */ }
+
+    // `checkGenie` answers with either an `error` object or an `ok` object;
+    // `toDiagnostics` turns the first into one entry and the second into none.
+    bag.set(doc.uri, toDiagnostics(json).map((d) => toVsDiagnostic(doc, d)));
+  }
+
+  async function judgeWish(doc) {
+    const M = await loadOrWarn();
+    if (!M) return;
 
     const genie = await genieFor(doc);
     dependsOn.set(doc.uri.toString(), genie.uri ? genie.uri.fsPath : null);
 
     if (genie.missing) {
-      const d = new vscode.Diagnostic(
-        rangeOf(doc, { line: genie.line + 1, column: 1, span: 'line' }),
-        `no such genie: ${genie.missing}`, vscode.DiagnosticSeverity.Error);
-      d.source = 'loophole';
-      bag.set(doc.uri, [d]);
+      bag.set(doc.uri, [toVsDiagnostic(doc, {
+        line: genie.directiveLine + 1, column: 1, span: 'line',
+        message: `no such genie: ${genie.missing}`, severity: 'error',
+        code: 'no-genie',
+      })]);
       return;
     }
 
     let r;
-    try {
-      r = M.judge(doc.getText(), genie.text, false, false, 0, 0);
-    } catch (err) {
-      console.error('loophole: the compiler threw', err);
-      return;
-    }
+    try { r = M.judge(doc.getText(), genie.text, false, false, 0, 0); }
+    catch (err) { console.error('loophole: judge threw', err); return; }
 
     let json = null;
     try { json = JSON.parse(r.json); } catch { /* nothing to report */ }
 
-    const genieDoc = genie.uri && openDoc(genie.uri.fsPath);
-    const wish = [], gen = [];
+    const diags = [];
     for (const d of toDiagnostics(json)) {
-      const onGenie = d.file === GENIE && genieDoc;
-      const target = onGenie ? genieDoc : doc;
-      const v = new vscode.Diagnostic(rangeOf(target, d), d.message,
-        d.severity === 'error' ? vscode.DiagnosticSeverity.Error
-                               : vscode.DiagnosticSeverity.Information);
-      v.source = 'loophole';
-      v.code = d.code;
-      (onGenie ? gen : wish).push(v);
+      if (d.file === GENIE) {
+        // The genie could not be read, so nothing could be judged. Point at this
+        // wish's `# genie:` line -- not at its code, which is fine -- and leave
+        // the precise error to the genie's own file, which shows it if open.
+        diags.push(toVsDiagnostic(doc, {
+          line: (genie.directiveLine ?? 0) + 1, column: 1, span: 'line',
+          message: `cannot judge: the genie has an error (line ${d.line})`,
+          severity: 'warning', code: 'genie-error',
+        }));
+        continue;
+      }
+      diags.push(toVsDiagnostic(doc, d));
     }
-    bag.set(doc.uri, wish);
-    if (genieDoc) bag.set(genieDoc.uri, gen);
+    bag.set(doc.uri, diags);
   }
 
   function schedule(doc) {
@@ -171,7 +221,10 @@ function activate(context) {
     vscode.workspace.onDidOpenTextDocument((d) => judge(d)),
     vscode.workspace.onDidChangeTextDocument((e) => {
       if (e.document.languageId === 'wish') schedule(e.document);
-      else if (e.document.languageId === 'genie') scheduleDependants(e.document);
+      else if (e.document.languageId === 'genie') {
+        schedule(e.document);              // its own syntax
+        scheduleDependants(e.document);    // the wishes that use it
+      }
     }),
     // A genie edited outside an editor, or one whose buffer was never open, is
     // read from disk -- a save is the only signal there is.

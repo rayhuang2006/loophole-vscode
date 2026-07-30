@@ -113,4 +113,29 @@ const run = (wish, genie = '') => {
                                /fooled I/.test(msg), msg);
 }
 
+// 8. A genie checked on its own, the same path `judgeGenie` takes -- `checkGenie`
+//    through the same `verdict.js`. A well-formed genie says nothing; a malformed
+//    one is the one real error, placed where the compiler pointed. This is the
+//    silent case the whole `--check-genie` change was for.
+const checkG = (genie) => {
+  const r = M.checkGenie(genie);
+  let json = null;
+  try { json = JSON.parse(r.json); } catch { /* as the extension does */ }
+  return { code: r.code, diags: toDiagnostics(json) };
+};
+{
+  const ok = checkG(M.defaultGenie());
+  check('genie check: a good genie exits 0', ok.code === 0, ok.code);
+  check('genie check: and has nothing to underline', ok.diags.length === 0,
+        JSON.stringify(ok.diags));
+
+  const bad = checkG('counter wishes\ntoll 1\nrule R\n  layer ast\n');
+  check('genie check: a broken genie exits 2', bad.code === 2, bad.code);
+  check('genie check: exactly one diagnostic', bad.diags.length === 1, bad.diags.length);
+  check('genie check: it is an error', bad.diags[0]?.severity === 'error',
+        bad.diags[0]?.severity);
+  check('genie check: on the line the brace was missing from',
+        bad.diags[0]?.line === 4, bad.diags[0]?.line);
+}
+
 process.exit(failed);

@@ -130,7 +130,49 @@ async function run() {
       JSON.stringify(after.map((d) => d.code)));
   }
 
+  // --- a genie, checked on its own -----------------------------------------
+  // Open the genie and break it. Two things must happen, and the second is the
+  // one the old code got wrong: the genie carries its own error, and the wish
+  // says only that it cannot be judged -- on its `# genie:` line, never as a
+  // red mark on code that is fine.
+  const genieUri = vscode.Uri.file(path.join(dir, 'strict.genie'));
+  const genieDoc = await vscode.workspace.openTextDocument(genieUri);
+  await vscode.window.showTextDocument(genieDoc);
+  if (genieDoc.languageId !== 'genie') {
+    throw new Error(`a .genie file was opened as '${genieDoc.languageId}'`);
+  }
+
+  // The rule opens with `rule NoMoreWishes {` on line 3. Take the brace off.
+  const brokeIt = new vscode.WorkspaceEdit();
+  brokeIt.replace(genieUri, new vscode.Range(3, 0, 3, GENIE.split('\n')[3].length),
+                  'rule NoMoreWishes');
+  await vscode.workspace.applyEdit(brokeIt);
+
+  let g = [], w = [];
+  for (let i = 0; i < 60; i++) {
+    await wait(250);
+    g = vscode.languages.getDiagnostics(genieUri);
+    w = vscode.languages.getDiagnostics(doc.uri);
+    if (g.length && w.some((d) => d.code === 'genie-error')) break;
+  }
+  const E = vscode.DiagnosticSeverity.Error;
+  must(g.length === 1 && g[0].severity === E,
+       'a broken genie must show its own error\n  saw: ' +
+       JSON.stringify(g.map((d) => ({ line: d.range.start.line, sev: d.severity }))));
+  must(g[0].source === 'loophole', 'the genie error must be attributed');
+
+  const note = w.find((d) => d.code === 'genie-error');
+  must(note, 'the wish must say it cannot be judged\n  saw: ' +
+             JSON.stringify(w.map((d) => d.code)));
+  must(note.severity === vscode.DiagnosticSeverity.Warning,
+       'a broken genie is not the wish being wrong -- a warning, not an error');
+  must(note.range.start.line === 0,
+       'the note belongs on the `# genie:` line, not on the wish code');
+  must(!w.some((d) => d.severity === E),
+       'nothing in the wish should be an error when only the genie is broken');
+
   console.log('  ok   VS Code activates it and the diagnostics arrive');
+  console.log('  ok   a lone genie carries its own syntax errors');
 }
 
 module.exports = { run };
