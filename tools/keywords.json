@@ -51,6 +51,176 @@
     "true",
     "false"
   ],
+  "docs": {
+    "register": {
+      "syntax": "register <name> : uint<N> = <value>",
+      "text": "Declare a counter in the world, N bits wide. The width is the whole integer joke: arithmetic on it wraps, so a ceiling the genie never checked can be free until somebody widens the box."
+    },
+    "attribute": {
+      "syntax": "attribute <name> : <type> = <default>",
+      "text": "Declare an attribute every person has, with the value it starts at. `revive` restores this default; `kill` sets every attribute to 0. A world that declares no attributes makes `alive(p)` false for everyone (spec §8.6)."
+    },
+    "people": {
+      "syntax": "people <name> { , <name> }",
+      "text": "Declare the population. Unlike `everyone` -- a definition that names it -- `people` cannot be rebound, so an invariant quantifying over `people` means what it says."
+    },
+    "wish": {
+      "syntax": "wish <name> { <statements> }",
+      "text": "One wish. The genie charges the toll, runs the body, and only then measures what it believed it was holding. Rules can refuse a wish; invariants cannot -- they just report."
+    },
+    "define": {
+      "syntax": "define <name> := <target>   |   define <name> := { <name>, ... }",
+      "text": "Bind a name to an operation, a person, a prior definition, or a set. Lasts for the rest of the program, across wish boundaries, and is rebindable -- that is the aliasing axis. A `surface` rule reads the name you wrote; an `ast` rule reads what it resolves to."
+    },
+    "promise": {
+      "syntax": "promise <formula>",
+      "text": "Put a commitment on the genie's ledger. Changes no world state. The genie must grant every legal wish (A1) and keep every promise (A2), so a promise the ledger cannot satisfy is how a wish makes the genie contradict itself."
+    },
+    "uint": {
+      "syntax": "uint<N>",
+      "text": "An unsigned N-bit value. Every operation on it is modulo 2^N -- there is no overflow error and no negative number, only wrapping."
+    },
+    "counter": {
+      "syntax": "counter <register>",
+      "text": "Which register holds the wish count. The toll comes off this one."
+    },
+    "toll": {
+      "syntax": "toll <n>",
+      "text": "What granting a wish costs, charged before the body runs. Subtracted with the same wrapping arithmetic as everything else -- which is why enough empty wishes underflow it."
+    },
+    "concept": {
+      "syntax": "concept <name>(<p>) := <expr>",
+      "text": "A named predicate over one person, built from attributes. Concepts are the second layer of the world model, and they are data: adding an attribute never touches the engine, only the concepts that mention it."
+    },
+    "rule": {
+      "syntax": "rule <name> { layer ... forbid ... because ... }",
+      "text": "A reason to refuse a wish outright. Rules are the only thing that can stop a wish; if every rule passes, the wish is granted whatever it then does to the invariants."
+    },
+    "invariant": {
+      "syntax": "invariant <name> { [label ...] check <expr> }",
+      "text": "Something the genie believes it is holding. Measured after the body runs, and it never refuses anything -- it only reports `holds`, `VIOLATED`, or `FOOLED`."
+    },
+    "layer": {
+      "syntax": "layer surface | ast",
+      "text": "Which program the rule reads. This one word is the whole aliasing joke: `surface` reads the text handed in, `ast` reads what it resolves to."
+    },
+    "forbid": {
+      "syntax": "forbid <verb> [ on <register> ] | forbid <verb>, <verb>, ...",
+      "text": "The verbs this rule refuses. Matched against the layer's view, so a `surface` rule forbidding `kill` is defeated by renaming it."
+    },
+    "on": {
+      "syntax": "forbid <verb> on <name>",
+      "text": "Narrow a `forbid` to one target, so the verb is refused only against that register or person."
+    },
+    "because": {
+      "syntax": "because \"<reason>\"",
+      "text": "What the genie says when it refuses. Quoted in the report, so write it as the sentence you want the player to read."
+    },
+    "check": {
+      "syntax": "check <expr>",
+      "text": "Shorthand for `written <expr>` with `real` equal to it -- the genie's wording and the truth are the same thing, so the invariant can be violated but never fooled."
+    },
+    "written": {
+      "syntax": "written <expr>",
+      "text": "The invariant as the genie words it, read under the definitions in force now. If the player rebound a name this formula uses, this is the version that gets fooled."
+    },
+    "real": {
+      "syntax": "real <expr>",
+      "text": "What the invariant was meant to protect, stated over grounded facts. When `written` holds and `real` does not, the verdict is FOOLED -- the genie's sentence survived and its meaning did not."
+    },
+    "label": {
+      "syntax": "label \"<text>\"",
+      "text": "How this invariant is named in the report. Cosmetic; the judgment reads the formula, not the label."
+    },
+    "sub": {
+      "syntax": "sub <register>, <n>",
+      "text": "Subtract, modulo the register's width. Does not saturate: 2 - 3 on a uint<2> is 3, not 0 and not an error. This is where the integer joke lives."
+    },
+    "add": {
+      "syntax": "add <register>, <n>",
+      "text": "Add, modulo the register's width. Wraps past the top the same way `sub` wraps past the bottom."
+    },
+    "widen": {
+      "syntax": "widen <register> -> uint<N>",
+      "text": "Change the register's width, truncating the value to the new one. The name lies: nothing requires the new width to be larger, so narrowing is an exploit surface too. Widening steals nothing -- it removes a ceiling the genie was getting for free."
+    },
+    "set": {
+      "syntax": "set <person>.<attribute>, <n>",
+      "text": "Set one attribute of one person, modulo that attribute's width. The way to change a person without saying `kill`."
+    },
+    "kill": {
+      "syntax": "kill <person>",
+      "text": "Set every attribute of the person to 0. Named as one operation on purpose: so a genie can forbid it by name, and so a player can defeat that by aliasing it."
+    },
+    "revive": {
+      "syntax": "revive <person>",
+      "text": "Restore every attribute of the person to its declared default."
+    },
+    "surface": {
+      "syntax": "layer surface",
+      "text": "Read the verb and argument as written in the source. Defeatable by aliasing -- and that is the point, not a bug in the layer."
+    },
+    "ast": {
+      "syntax": "layer ast",
+      "text": "Read the program the machine will actually run, after definitions are resolved. Renaming a verb changes nothing here."
+    },
+    "all": {
+      "syntax": "all <p> in <domain>: <expr>",
+      "text": "Universal quantifier. Vacuously true over an empty domain -- and since a domain can be a definition, the player can empty it."
+    },
+    "in": {
+      "syntax": "all <p> in <domain>: <expr>",
+      "text": "Names the domain a quantifier ranges over: `people`, a set literal, or a definition. `everyone` is a definition, so it is rebindable."
+    },
+    "not": {
+      "syntax": "not <expr>",
+      "text": "Logical negation."
+    },
+    "and": {
+      "syntax": "<expr> and <expr>",
+      "text": "Logical conjunction."
+    },
+    "or": {
+      "syntax": "<expr> or <expr>",
+      "text": "Logical disjunction."
+    },
+    "implies": {
+      "syntax": "(<formula> implies <formula>)",
+      "text": "Material implication, used in promises. `granted(self) implies F` is how a wish binds the genie to F only if the wish happens."
+    },
+    "granted": {
+      "syntax": "granted(<wish>) | granted(self)",
+      "text": "A Boolean variable, one per wish, whose truth the genie chooses. `granted(self)` is the wish making the promise. Meta-axiom A1 puts `granted(w)` on the ledger for every legal wish."
+    },
+    "alive": {
+      "syntax": "alive(<person>)",
+      "text": "True iff some attribute of the person is nonzero. Read from the grounded world, not chosen -- and deliberately weak: in a world with no attributes it is false for everybody (spec §8.6)."
+    },
+    "self": {
+      "syntax": "granted(self)",
+      "text": "The wish currently making the promise, so a wish can talk about its own granting without naming itself."
+    },
+    "consistent": {
+      "syntax": "consistent",
+      "text": "True iff the ledger of commitments still has a model. This is where a promise the genie cannot keep shows up."
+    },
+    "max": {
+      "syntax": "max(<expr>, <expr>)",
+      "text": "The larger of two values. Used to floor an invariant at zero, since there are no negative numbers here."
+    },
+    "before": {
+      "syntax": "before(<register>)",
+      "text": "The register's value before the toll was charged, so an invariant can talk about what the wish was supposed to cost."
+    },
+    "true": {
+      "syntax": "true",
+      "text": "The constant true."
+    },
+    "false": {
+      "syntax": "false",
+      "text": "The constant false."
+    }
+  },
   "comment": "#",
   "type": "uint<N>",
   "languages": {

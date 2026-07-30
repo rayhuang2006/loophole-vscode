@@ -1,8 +1,8 @@
 {
   "name": "loophole",
   "displayName": "Loophole",
-  "description": "Syntax highlighting and inline diagnostics for the wish and genie languages.",
-  "version": "0.3.0",
+  "description": "Syntax highlighting, inline diagnostics, CodeLens, hover and completion for the wish and genie languages.",
+  "version": "0.4.0",
   "publisher": "rayhuang2006",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -65,7 +65,7 @@
     "keywords": "node tools/fetch-keywords.mjs",
     "wasm": "node tools/fetch-wasm.mjs",
     "gen": "node tools/gen-grammars.mjs",
-    "test": "node tools/grammar-check.mjs && node tools/diagnostics-check.mjs && node tools/extension-check.mjs",
+    "test": "node tools/grammar-check.mjs && node tools/diagnostics-check.mjs && node tools/assist-check.mjs && node tools/extension-check.mjs",
     "check": "npm run gen && git diff --exit-code syntaxes/ && npm test && npm run test:editor",
     "test:editor": "node tools/vscode-run.mjs"
   },
@@ -76,6 +76,7 @@
   },
   "main": "./src/extension.js",
   "activationEvents": [
-    "onLanguage:wish"
+    "onLanguage:wish",
+    "onLanguage:genie"
   ]
 }

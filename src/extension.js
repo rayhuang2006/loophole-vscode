@@ -19,6 +19,7 @@
 const vscode = require('vscode');
 const path = require('path');
 const { toDiagnostics, GENIE } = require('./verdict.js');
+const assist = require('./assist.js');
 
 /** Milliseconds of quiet before a keystroke turns into a judgment. */
 const SETTLE = 250;
@@ -117,11 +118,30 @@ function activate(context) {
   // Which genie each wish was judged by, so editing a genie re-judges the
   // wishes that actually depend on it rather than every open file.
   const dependsOn = new Map();
+  // The last judgment of each document. Lenses, hovers and completions all
+  // read this instead of judging again: three views of one verdict cannot
+  // disagree with each other, and a hover is not a reason to run the compiler.
+  const judged = new Map();
+  // `--keywords` from the bundled compiler, so a hover shows the compiler's own
+  // sentence. Read from the wasm rather than from `tools/keywords.json`, which
+  // is a build input and is not shipped inside the package.
+  let keywords = null;
   let announcedFailure = false;
+
+  const lensChanged = new vscode.EventEmitter();
+  context.subscriptions.push(lensChanged);
 
   async function loadOrWarn() {
     try {
-      return await load(context);
+      const M = await load(context);
+      if (!keywords) {
+        // Defensive: a package whose wasm predates 1.13.0 has `keywords()` but
+        // no `docs` in it. Hover then finds nothing for a reserved word, which
+        // is the correct degradation -- it must not take the extension down.
+        try { keywords = JSON.parse(M.keywords()); }
+        catch (e) { console.error('loophole: could not read --keywords', e); }
+      }
+      return M;
     } catch (err) {
       // Once, not once per keystroke. And loudly: silence here would look
       // exactly like a clean file, which is the worst possible lie to tell.
@@ -158,6 +178,9 @@ function activate(context) {
     // `checkGenie` answers with either an `error` object or an `ok` object;
     // `toDiagnostics` turns the first into one entry and the second into none.
     bag.set(doc.uri, toDiagnostics(json).map((d) => toVsDiagnostic(doc, d)));
+    // No wishes were judged, so there is nothing for a lens to say. Recorded
+    // anyway, so a hover in a genie still gets the keyword docs.
+    judged.set(doc.uri.toString(), null);
   }
 
   async function judgeWish(doc) {
@@ -173,6 +196,7 @@ function activate(context) {
         message: `no such genie: ${genie.missing}`, severity: 'error',
         code: 'no-genie',
       })]);
+      setJudgment(doc, null);
       return;
     }
 
@@ -199,6 +223,13 @@ function activate(context) {
       diags.push(toVsDiagnostic(doc, d));
     }
     bag.set(doc.uri, diags);
+    setJudgment(doc, json);
+  }
+
+  /** Keep the judgment the other three features read, and refresh the lenses. */
+  function setJudgment(doc, json) {
+    judged.set(doc.uri.toString(), json);
+    lensChanged.fire();
   }
 
   function schedule(doc) {
@@ -216,6 +247,76 @@ function activate(context) {
       if (named === undefined || named === genieDoc.uri.fsPath) schedule(d);
     }
   }
+
+  // ---- the three read-only views of that judgment -------------------------
+  const BOTH = [{ language: 'wish' }, { language: 'genie' }];
+
+  context.subscriptions.push(vscode.languages.registerCodeLensProvider(
+    { language: 'wish' }, {
+      onDidChangeCodeLenses: lensChanged.event,
+      provideCodeLenses(doc) {
+        const json = judged.get(doc.uri.toString());
+        return assist.lenses(json).map((l) => {
+          const line = Math.max(0, Math.min(l.line - 1, doc.lineCount - 1));
+          // A title-only lens: `command` is empty, so VS Code renders the text
+          // and makes nothing clickable. There is nowhere useful to go -- the
+          // detail is already one hover away.
+          return new vscode.CodeLens(new vscode.Range(line, 0, line, 0),
+                                     { title: l.title, command: '' });
+        });
+      },
+    }));
+
+  context.subscriptions.push(vscode.languages.registerHoverProvider(BOTH, {
+    provideHover(doc, position) {
+      const range = doc.getWordRangeAtPosition(position);
+      if (!range) return null;
+      const h = assist.hover({
+        word: doc.getText(range), text: doc.getText(),
+        keywords, json: judged.get(doc.uri.toString()) ?? null,
+      });
+      if (!h) return null;
+
+      const md = new vscode.MarkdownString();
+      if (h.kind === 'word') {
+        md.appendCodeblock(h.syntax, doc.languageId);
+        md.appendMarkdown(h.text);
+      } else if (h.kind === 'wish') {
+        md.appendMarkdown(h.body);
+      } else {
+        const w = h.width ? ` \`uint<${h.width}>\`` : '';
+        md.appendMarkdown(`**${h.word}**${w}\n\n`);
+        md.appendMarkdown(`after each wish: \`${h.trail.join(' → ')}\``);
+      }
+      return new vscode.Hover(md, range);
+    },
+  }));
+
+  const COMPLETION_KIND = {
+    keyword:   vscode.CompletionItemKind.Keyword,
+    operation: vscode.CompletionItemKind.Function,
+    constant:  vscode.CompletionItemKind.Constant,
+    function:  vscode.CompletionItemKind.Operator,
+    variable:  vscode.CompletionItemKind.Variable,
+    alias:     vscode.CompletionItemKind.Reference,
+  };
+
+  context.subscriptions.push(vscode.languages.registerCompletionItemProvider(
+    BOTH, {
+      provideCompletionItems(doc, position) {
+        const linePrefix = doc.lineAt(position.line).text.slice(0, position.character);
+        return assist.completions({
+          linePrefix, languageId: doc.languageId, keywords,
+          text: doc.getText(), json: judged.get(doc.uri.toString()) ?? null,
+        }).map((c) => {
+          const item = new vscode.CompletionItem(
+            c.label, COMPLETION_KIND[c.kind] ?? COMPLETION_KIND.keyword);
+          if (c.detail) item.detail = c.detail;
+          if (c.doc) item.documentation = new vscode.MarkdownString(c.doc);
+          return item;
+        });
+      },
+    }));
 
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument((d) => judge(d)),
@@ -236,6 +337,7 @@ function activate(context) {
       clearTimeout(timers.get(d.uri.toString()));
       timers.delete(d.uri.toString());
       dependsOn.delete(d.uri.toString());
+      judged.delete(d.uri.toString());
     }),
   );
 

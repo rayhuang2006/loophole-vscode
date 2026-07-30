@@ -27,7 +27,7 @@ npm run check      # 以上全部 + 確認沒有人手改生成物
 
 ## 測試測的是什麼
 
-`npm test` 跑三支，全部用真東西，沒有 fixture：
+`npm test` 跑四支，全部用真東西，沒有 fixture：
 
 **`grammar-check.mjs`** 跑的是 **`vscode-textmate` + `vscode-oniguruma`——VS Code
 本身用的 tokenizer**，不是只驗 JSON 合法。因為一份文法可以完全合法、
@@ -48,10 +48,18 @@ npm run check      # 以上全部 + 確認沒有人手改生成物
 編譯器改了輸出之後，fixture 會永遠綠。單獨檢查精靈的路徑（`checkGenie`
 過同一個 `verdict.js`）也在這裡：好精靈零診斷，壞精靈一個錯誤、落在缺括號的那行。
 
+**`assist-check.mjs`** 一樣用真的 wasm，檢查 lens 寫什麼、hover 說什麼、
+補全給什麼。最重要的一條是拿 `keywords.docs` 去比對 hover 的文字——
+**插件不准自己帶一份語義的散文**，帶了就紅。另外盯著 register 的值
+從頭到尾是字串（`18446744073709551615` 一旦被 `Number()` 碰到就變成
+`...552000`），和寬度跟著 `widen` 走而不是宣告值。
+
 **`extension-check.mjs`** 真的呼叫 `activate()`，對著一個假的 VS Code API，
 但編譯器是真的、`extension.js` 是真的。它證明的是「診斷有送到」：
 `activate` 不會拋、wasm 從 `context.extensionPath` 載得起來、
 `# genie:` 找得到檔案、範圍落在它指責的那段文字上、關掉檔案波浪線會消失。
+三個 provider 也在這裡被當成 VS Code 那樣呼叫一次——證明它們有註冊、
+讀的是快取的判決而不是再判一次。
 
 **沒有這一層，套件可以裝上去完全不動而其他檢查全綠**——
 這個專案已經以另一種形式出過一次這種貨：一個被快取住的 web worker，
@@ -62,7 +70,10 @@ npm run check      # 以上全部 + 確認沒有人手改生成物
 `main` 指得到嗎、`.wish` 有沒有真的被認成 `wish` 語言、
 打開檔案會不會自己啟動、編輯之後波浪線會不會跟著動。
 它也真的把一個精靈改壞，確認錯誤落在精靈自己身上、
-而願望只在 `# genie:` 那行得到一句 warning（上面那條歸屬規則）。
+而願望只在 `# genie:` 那行得到一句 warning（上面那條歸屬規則），
+然後用 `vscode.executeCodeLensProvider` 那組命令去問 lens / hover / 補全——
+那是編輯器自己問的路徑，所以這是唯一能證明「provider 真的被接到」的地方：
+把 provider 註冊到一個沒有東西會解析成的語言，其他檢查全部照樣綠。
 這些東西在別的地方一行都不會被執行到。
 
 一個要注意的細節：**`activationEvents` 那個欄位不是啟動的機制**。
@@ -114,13 +125,48 @@ CI 另外做四件事：確認 `syntaxes/` 就是生成器的產物，
 ```
 wasm/loophole.{js,wasm}    編譯器本體，從 release 抓的，進版控
         ↓
-src/extension.js           讀檔、呼叫、放範圍。膠水
-        ↓
-src/verdict.js             決定什麼算問題。不 import vscode
+src/extension.js           讀檔、呼叫、放範圍、快取判決。膠水
+        ↓  ↓
+src/verdict.js             決定什麼算問題（診斷）
+src/assist.js              lens 寫什麼、hover 說什麼、補全給什麼
 ```
 
-**`verdict.js` 刻意不依賴 VS Code。** 這個功能唯一在「決定事情」的地方就是它，
-而那個決定不該需要跑一個編輯器才能檢查。
+**`verdict.js` 和 `assist.js` 都刻意不依賴 VS Code。** 這個功能真正在「決定事情」
+的地方就是它們兩個，而那些決定不該需要跑一個編輯器才能檢查。
+
+### 一份判決，四個視角
+
+診斷、CodeLens、hover、補全全部讀 `extension.js` 裡快取的**同一份** `--json`。
+兩個理由：三個視角不可能互相矛盾，而且滑一下鼠標不該讓編譯器再跑一次。
+判決更新時 `lensChanged.fire()` 叫 VS Code 重新拿 lens。
+
+### hover 的說明不能寫在插件裡
+
+`--keywords` 的 `docs`（編譯器 1.13.0 起）給每個保留字一句話和一行語法。
+**插件不准自己寫。** 一旦寫了，語義就有第二份說法，可以自由地跟本體漂走而沒人發現。
+`tools/assist-check.mjs` 是拿 `keywords.docs` 去比對的，
+所以「插件自己帶散文」這件事會直接紅。
+
+operation 的語法是從 `OperandKind` 生成的，不是手寫在旁邊——
+不可能出現「文件說吃寬度、parser 要立即值」。
+
+### 名字是刮出來的，判決不是
+
+補全需要名字。register 和 wish 名從判決來（編譯器解析過的）；
+people、attribute、define 不在 `--json` 裡，所以是用 regex 從原始碼刮的。
+
+**刮取只允許在這裡，而理由是爆炸半徑。** 刮錯一個名字 = 下拉選單多一個沒人選的項目。
+刮錯一個判決 = 騙使用者他的 exploit 成功了。這兩件事不是同一個風險等級，
+而「絕對不要重寫編譯器」保護的是後者。刮取也是檔案還不能解析時唯一能用的東西——
+**而那正是有人在打字的時候。**
+
+### register 的值是字串
+
+`--json` 的 register 值是**字串**，不是 number（編譯器 1.14.0）。
+uint64 過不了 JSON number：`18446744073709551615` 用 `JSON.parse` 讀回來是
+`18446744073709552000`。所以 `assist.js` 裡那些值從頭到尾不轉成 `Number`，
+`tools/assist-check.mjs` 有一條就在盯這件事。
+寬度也從判決拿，因為 `widen` 會改它。
 
 ### 嚴重度政策
 
@@ -165,8 +211,6 @@ src/verdict.js             決定什麼算問題。不 import vscode
 
 `npm run wasm` 順便驗這件事：抓下來之後真的把它跑起來問 `versions()`，
 跟 `keywords.json` 的語言版本比對，不一樣就失敗。
-
-## 測試測的是什麼
 
 ## 發布
 

@@ -173,6 +173,69 @@ async function run() {
 
   console.log('  ok   VS Code activates it and the diagnostics arrive');
   console.log('  ok   a lone genie carries its own syntax errors');
+
+  // --- the three providers, through VS Code's own commands -----------------
+  // `executeCodeLensProvider` and friends are how the editor itself asks. They
+  // go through the same contribution points the manifest declares, so this is
+  // the only place that proves a provider is actually reachable -- registering
+  // one for a language nothing resolves to would pass every other check here.
+  //
+  // Put the genie back first: a broken genie means no judgment, and no judgment
+  // means no lenses.
+  const fixIt = new vscode.WorkspaceEdit();
+  fixIt.replace(genieUri, new vscode.Range(3, 0, 3, 'rule NoMoreWishes'.length),
+                'rule NoMoreWishes {');
+  await vscode.workspace.applyEdit(fixIt);
+
+  await vscode.window.showTextDocument(doc);
+  // The wish was edited earlier to `sub wishes, 1`, which is clean. Put the
+  // exploit back so there is a verdict worth reading.
+  const restore = new vscode.WorkspaceEdit();
+  restore.replace(doc.uri, new vscode.Range(8, 4, 8, 17), 'sub wishes, 3');
+  await vscode.workspace.applyEdit(restore);
+
+  let lenses = [];
+  for (let i = 0; i < 60; i++) {
+    await wait(250);
+    lenses = await vscode.commands.executeCommand(
+      'vscode.executeCodeLensProvider', doc.uri);
+    if (lenses && lenses.length === 2) break;
+  }
+  must(lenses && lenses.length === 2,
+       'VS Code must get one CodeLens per wish\n  saw: ' +
+       JSON.stringify((lenses || []).map((l) => l.command?.title)));
+  const titles = lenses.map((l) => l.command.title);
+  must(titles.some((t) => /not granted/.test(t)),
+       'a lens must report the refusal\n  saw: ' + JSON.stringify(titles));
+  must(titles.some((t) => /EXPLOIT/.test(t)),
+       'a lens must report the exploit\n  saw: ' + JSON.stringify(titles));
+
+  // Hover over the `sub` on line index 8.
+  const hovers = await vscode.commands.executeCommand(
+    'vscode.executeHoverProvider', doc.uri, new vscode.Position(8, 5));
+  const hoverText = (hovers || [])
+    .flatMap((h) => h.contents.map((c) => c.value ?? String(c))).join('\n');
+  must(/modulo the register/.test(hoverText),
+       'hovering `sub` must show the compiler\'s own sentence\n  saw: ' + hoverText);
+
+  // Hover over `wishes` on the same line: a register, so the trail of values.
+  const regHover = await vscode.commands.executeCommand(
+    'vscode.executeHoverProvider', doc.uri, new vscode.Position(8, 10));
+  const regText = (regHover || [])
+    .flatMap((h) => h.contents.map((c) => c.value ?? String(c))).join('\n');
+  must(/after each wish/.test(regText),
+       'hovering a register must show its trail\n  saw: ' + regText);
+
+  // Completion just after `    sub ` on line index 8.
+  const list = await vscode.commands.executeCommand(
+    'vscode.executeCompletionItemProvider', doc.uri, new vscode.Position(8, 8));
+  const labels = (list?.items ?? []).map((i) =>
+    typeof i.label === 'string' ? i.label : i.label.label);
+  must(labels.includes('wishes'),
+       'completing after `sub` must offer the register\n  saw: ' +
+       JSON.stringify(labels.slice(0, 12)));
+
+  console.log('  ok   VS Code reaches the lens, hover and completion providers');
 }
 
 module.exports = { run };
