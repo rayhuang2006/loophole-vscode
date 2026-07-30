@@ -66,9 +66,11 @@
     "wasm": "node tools/fetch-wasm.mjs",
     "gen": "node tools/gen-grammars.mjs",
     "test": "node tools/grammar-check.mjs && node tools/diagnostics-check.mjs && node tools/extension-check.mjs",
-    "check": "npm run gen && git diff --exit-code syntaxes/ && npm test"
+    "check": "npm run gen && git diff --exit-code syntaxes/ && npm test && npm run test:editor",
+    "test:editor": "node tools/vscode-run.mjs"
   },
   "devDependencies": {
+    "@vscode/test-electron": "^3.1.0",
     "vscode-oniguruma": "^2.0.1",
     "vscode-textmate": "^9.0.0"
   },

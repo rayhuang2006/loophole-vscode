@@ -9,3 +9,4 @@ images/logo.svg
 .vscodeignore
 CONTRIBUTING.md
 loophole-*.vsix
+.vscode-test/**

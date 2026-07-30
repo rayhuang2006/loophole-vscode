@@ -70,3 +70,18 @@ jobs:
           git diff --exit-code tools/keywords.json || {
             echo "::warning::the published compiler reserves different words. Run 'npm run keywords && npm run gen'."
           }
+
+  # A real VS Code, because the manifest is the one thing no other check here can
+  # exercise: `main`, `activationEvents`, and whether a `.wish` file is even
+  # recognised as the `wish` language. Get any of those wrong and the package
+  # installs without a word of complaint and then does nothing.
+  editor:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npm ci
+      # `xvfb-run` because VS Code is an Electron app and wants a display even
+      # when nobody is looking at it.
+      - run: xvfb-run -a npm run test:editor

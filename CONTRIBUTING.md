@@ -56,6 +56,17 @@ npm run check      # 以上全部 + 確認沒有人手改生成物
 這個專案已經以另一種形式出過一次這種貨：一個被快取住的 web worker，
 對每個問題都用沉默回答。
 
+`npm run test:editor` 再上一層：下載一個真的 VS Code 跑起來，
+在裡面讀 `vscode.languages.getDiagnostics()`。它測的是 manifest——
+`main` 指得到嗎、`.wish` 有沒有真的被認成 `wish` 語言、
+打開檔案會不會自己啟動、編輯之後波浪線會不會跟著動。
+這些東西在別的地方一行都不會被執行到。
+
+一個要注意的細節：**`activationEvents` 那個欄位不是啟動的機制**。
+清空它什麼都不會變，因為 VS Code 會從 `contributes.languages` 自己推導
+`onLanguage:wish`。那個欄位是文件。真正會被抓到的是 `main` 指錯，
+和 `.wish` 沒有被任何語言認領（檔案會以 plaintext 打開）。
+
 CI 另外做四件事：確認 `syntaxes/` 就是生成器的產物，
 確認 `wasm/` 是最新 release 的位元組，
 確認 `.vsix` 裡真的有 `wasm/` 和 `src/`（`.vscodeignore` 是一份「不要包什麼」的清單，
