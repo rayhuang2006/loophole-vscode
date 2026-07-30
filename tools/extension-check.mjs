@@ -21,6 +21,14 @@ import { tmpdir } from 'node:os';
 const here = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(here, '..');
 
+// The bundled compiler's version, read from the bundled compiler. Hard-coding it
+// would make this file need editing on every upstream release, and the check
+// that matters -- "the binary on the PATH is a different build" -- would then be
+// comparing against a number nobody kept current.
+const { createRequire } = await import('node:module');
+const req = createRequire(import.meta.url);
+const compilerVersion = (await req('../wasm/loophole.js')()).versions().split('|')[0];
+
 // --- the stub --------------------------------------------------------------
 class Range {
   constructor(sl, sc, el, ec) {
@@ -54,12 +62,33 @@ class EventEmitter {
   dispose() {}
 }
 
+class Task {
+  constructor(definition, scope, name, source, execution, matcher) {
+    Object.assign(this, { definition, scope, name, source, execution, matcher });
+  }
+}
+class ShellExecution {
+  constructor(command, args, options) {
+    Object.assign(this, { command, args, options });
+  }
+}
+
 const bags = new Map();
 const handlers = { open: [], change: [], save: [], close: [] };
 const docs = [];
-// The three providers `activate` registers, captured so they can be called the
-// way VS Code would call them.
+// The providers and commands `activate` registers, captured so they can be
+// called the way VS Code would call them.
 const providers = {};
+const commands = new Map();
+const terminals = [];
+const warnings = [];
+const errors = [];
+let activeDoc = null;
+
+// The binary on the PATH, faked. Real enough to exercise `installedVersion`,
+// controllable enough to run on a machine that has never installed the
+// compiler -- which is every CI runner.
+const fakeBinary = { version: null };   // null = not installed
 
 function doc(fsPath, text, languageId) {
   const lines = text.split('\n');
@@ -106,9 +135,39 @@ const vscode = {
     registerCompletionItemProvider: (_s, p) =>
       (providers.completion = p, { dispose() {} }),
   },
-  window: { showErrorMessage: (m) => { throw new Error('unexpected: ' + m); } },
+  Task, ShellExecution,
+  TaskScope: { Workspace: 1 },
+  TaskGroup: { Build: 'build' },
+  TaskRevealKind: { Always: 1 },
+  TaskPanelKind: { Dedicated: 2 },
+  commands: {
+    registerCommand: (id, fn) => (commands.set(id, fn), { dispose() {} }),
+    executeCommand: (id, ...a) => commands.get(id)?.(...a),
+  },
+  tasks: {
+    registerTaskProvider: (_t, p) => (providers.task = p, { dispose() {} }),
+  },
+  env: {
+    clipboard: { writeText: async () => {} },
+    openExternal: async () => {},
+  },
+  window: {
+    // Collected, not thrown. The diagnostics section asserts this stays empty;
+    // the run section deliberately provokes one.
+    showErrorMessage: (m) => { errors.push(m); return Promise.resolve(undefined); },
+    showInformationMessage: async () => {},
+    showWarningMessage: (m) => { warnings.push(m); return Promise.resolve(undefined); },
+    get activeTextEditor() { return activeDoc ? { document: activeDoc } : undefined; },
+    createTerminal: (opts) => {
+      const t = { ...opts, sent: [], show() {}, dispose() {} };
+      t.sendText = (s) => t.sent.push(s);
+      terminals.push(t);
+      return t;
+    },
+  },
   workspace: {
     get textDocuments() { return docs; },
+    getConfiguration: () => ({ get: (k) => (k === 'path' ? 'loophole' : undefined) }),
     fs: { readFile: async () => { throw new Error('not on disk'); } },
     onDidOpenTextDocument: (f) => (handlers.open.push(f), { dispose() {} }),
     onDidChangeTextDocument: (f) => (handlers.change.push(f), { dispose() {} }),
@@ -117,9 +176,21 @@ const vscode = {
   },
 };
 
+const child_process = {
+  execFileSync: (file, args) => {
+    if (fakeBinary.version === null) {
+      const e = new Error(`spawnSync ${file} ENOENT`); e.code = 'ENOENT'; throw e;
+    }
+    if (args?.[0] !== '--version') throw new Error('unexpected: ' + args);
+    return `loophole ${fakeBinary.version}  (wish 1.0, genie 1.0)\n`;
+  },
+};
+
 const load = Module._load;
 Module._load = (request, parent, isMain) =>
-  request === 'vscode' ? vscode : load(request, parent, isMain);
+  request === 'vscode' ? vscode
+  : request === 'child_process' ? child_process
+  : load(request, parent, isMain);
 
 // --- the run ---------------------------------------------------------------
 const dir = mkdtempSync(path.join(tmpdir(), 'loophole-'));
@@ -273,6 +344,96 @@ if (providers.completion) {
   check('completion: after a verb, the register it takes',
         labels.includes('wishes'), labels.join(','));
   check('completion: items carry a kind', items.every((i) => i.kind !== undefined));
+}
+
+// --- running ---------------------------------------------------------------
+// The task provider builds the command line without a terminal being involved,
+// so it can be inspected exactly. What matters here is the `--genie` flag: the
+// compiler does not read the `# genie:` comment, so a task that omitted it would
+// judge the file against the built-in genie and disagree with the squiggles
+// three inches above it.
+check('nothing went wrong up to here', errors.length === 0, errors.join(' | '));
+check('a run command was registered', commands.has('loophole.run'));
+check('a task provider was registered', !!providers.task);
+
+activeDoc = wishDoc;
+wishDoc.isDirty = false;
+wishDoc.save = async () => {};
+
+// No binary: say so, and do NOT quietly run the bundled WebAssembly instead.
+// The two judge identically -- `make wasm-check` proves it every build -- so a
+// fallback would not lie about the verdict. It would do something worse: make
+// "run" mean a different act on different machines, when the whole point of the
+// act is that it is the one everybody else performs.
+{
+  fakeBinary.version = null;
+  errors.length = 0;
+  await commands.get('loophole.run')();
+  check('no binary: it says so', errors.length === 1, errors.join(' | '));
+  check('no binary: and mentions the PATH', /PATH/.test(errors[0] ?? ''), errors[0]);
+  check('no binary: and nothing was run', terminals.length === 0, terminals.length);
+}
+
+// Matching versions: run, quietly.
+{
+  fakeBinary.version = compilerVersion;
+  errors.length = 0; warnings.length = 0;
+  await commands.get('loophole.run')();
+  check('matching versions: no warning', warnings.length === 0, warnings.join(' | '));
+  check('matching versions: a terminal was opened', terminals.length === 1);
+  check('matching versions: and got the command, with --genie',
+        terminals[0]?.sent[0] === 'loophole --genie strict.genie demo.wish',
+        JSON.stringify(terminals[0]?.sent));
+}
+
+// A different build on the PATH from the one drawing the squiggles. Found by
+// actually running this feature: the development machine had 1.3.1 installed
+// while the package carried 1.14.0, so the editor and the terminal were two
+// different compilers and nothing said a word.
+{
+  fakeBinary.version = '0.0.1';
+  warnings.length = 0;
+  await commands.get('loophole.run')();
+  check('version skew: it warns', warnings.length === 1, warnings.join(' | '));
+  check('version skew: naming the installed version',
+        /0\.0\.1/.test(warnings[0] ?? ''), warnings[0]);
+  check('version skew: and the bundled one',
+        warnings[0]?.includes(compilerVersion), warnings[0]);
+  check('version skew: but still runs', terminals[0]?.sent.length === 2,
+        JSON.stringify(terminals[0]?.sent));
+
+  // Once per session. A warning on every run would train the reader to dismiss
+  // it without reading, which is the same as not having it.
+  warnings.length = 0;
+  await commands.get('loophole.run')();
+  check('version skew: warned once, not every time', warnings.length === 0,
+        warnings.join(' | '));
+}
+if (providers.task) {
+  const tasks = providers.task.provideTasks();
+  check('tasks: one for the active wish', tasks?.length === 1, tasks?.length);
+  const t = tasks?.[0];
+  check('tasks: it runs the configured executable',
+        t?.execution.command === 'loophole', t?.execution.command);
+  check('tasks: and passes --genie, because the compiler will not read `# genie:`',
+        t?.execution.args.join(' ') === '--genie strict.genie demo.wish',
+        JSON.stringify(t?.execution.args));
+  check('tasks: with NO_COLOR, so the matcher reads text and not escape codes',
+        t?.execution.options?.env?.NO_COLOR === '1',
+        JSON.stringify(t?.execution.options?.env));
+  check('tasks: wired to the loophole problem matcher', t?.matcher === '$loophole',
+        t?.matcher);
+  check('tasks: in the build group so ⌘⇧B reaches it', t?.group === 'build', t?.group);
+
+  // A hand-written tasks.json entry must resolve too.
+  const resolved = providers.task.resolveTask(
+    new Task({ type: 'loophole', file: 'a.wish' }, null, 'x', 'loophole', null, null));
+  check('tasks: a hand-written definition resolves',
+        resolved?.execution.args.join(' ') === 'a.wish',
+        JSON.stringify(resolved?.execution?.args));
+  check('tasks: one without a file does not',
+        providers.task.resolveTask(
+          new Task({ type: 'loophole' }, null, 'x', 'loophole', null, null)) === undefined);
 }
 
 // Closing a document takes its squiggles with it. Left behind, they would sit in

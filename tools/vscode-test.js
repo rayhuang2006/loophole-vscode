@@ -50,7 +50,11 @@ const GENIE = [
 const wait = (ms) => new Promise((r) => setTimeout(r, ms));
 
 async function run() {
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'loophole-vscode-'));
+  // Write into the folder VS Code was launched with, when there is one, so the
+  // files live inside a workspace. Tasks are workspace-scoped and VS Code will
+  // not hand back a task for a file that belongs to no folder.
+  const dir = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath
+           ?? fs.mkdtempSync(path.join(os.tmpdir(), 'loophole-vscode-'));
   const wishPath = path.join(dir, 'demo.wish');
   fs.writeFileSync(wishPath, WISH);
   fs.writeFileSync(path.join(dir, 'strict.genie'), GENIE);
@@ -236,6 +240,27 @@ async function run() {
        JSON.stringify(labels.slice(0, 12)));
 
   console.log('  ok   VS Code reaches the lens, hover and completion providers');
+
+  // --- running --------------------------------------------------------------
+  // The command has to be registered with VS Code, and the task has to be one
+  // VS Code itself will hand back from `fetchTasks` -- a provider registered for
+  // a task type the manifest never declared produces nothing, silently, and
+  // every check outside a real editor still passes.
+  const ids = await vscode.commands.getCommands(true);
+  must(ids.includes('loophole.run'),
+       'the run command must be registered with VS Code');
+
+  const tasks = await vscode.tasks.fetchTasks({ type: 'loophole' });
+  must(tasks.length >= 1,
+       'VS Code must find a loophole task for the open wish\n  saw: ' + tasks.length);
+  const t = tasks[0];
+  must(t.definition.type === 'loophole',
+       'the task must carry the declared type\n  saw: ' + JSON.stringify(t.definition));
+  must(/--genie/.test(t.execution?.args?.join(' ') ?? ''),
+       'the task must pass --genie, or it judges against a different genie than ' +
+       'the editor\n  saw: ' + JSON.stringify(t.execution?.args));
+
+  console.log('  ok   VS Code registers the run command and finds the task');
 }
 
 module.exports = { run };

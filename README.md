@@ -1,6 +1,6 @@
 # Loophole for VS Code
 
-`.wish` 和 `.genie` 的語法高亮，以及行內診斷。
+`.wish` 和 `.genie` 的語法高亮、行內診斷，以及一個播放鍵。
 
 ## Loophole 是什麼
 
@@ -70,6 +70,37 @@ after each wish: 3 → 2 → 18446744073709551615
 **自動補全。** 保留字帶說明，而且看得懂上下文：`sub ` 後面給你 register，
 `kill ` 後面給你人。名字從編譯器判決來，檔案還沒寫完不能判的時候退回讀原始碼。
 
+## 執行
+
+上面那些都是**環境式**的——你打字它就在判，你沒有要求過。但一個會執行的語言
+應該有「執行」這個動作，所以編輯器右上角有一個**播放鍵**：
+
+```
+loophole --genie mine.genie w.wish
+```
+
+它把這行**原字打進終端機**，你看得到指令、按上鍵可以重跑。輸出是編譯器真正的
+那份報告，有時間順序——先看規則能不能擋、收過路費、執行、事後才量：
+
+```
+wish experiment
+    rules     passed. no rule refuses this wish.
+    toll      wishes 3 -> 2
+    ran       sub    wishes, 3   (2 - 3 on uint<2> = 3)
+    checks    I2          VIOLATED  wishes <= max(before(wishes) - toll, 0)
+    verdict   EXPLOIT. legal, yet it broke I2.
+```
+
+`⌘⇧B` 也可以，那是同一件事的 task 版本，而且錯誤會進 Problems 面板。
+
+**執行需要你裝了本體。** 波浪線用的是套件內含的 WebAssembly 編譯器，
+但「執行」跑的是你 PATH 上真正的 `loophole`——沒裝的話它會直說並給你安裝指令，
+**不會偷偷用內含的那個代跑**。兩者的判決證明過完全相同（CI 每次都在驗），
+但如果偷偷代跑，「執行」這個動作在不同機器上就會是不同的事。
+
+裝的版本跟套件內含的版本不一樣時它也會講一聲——不然編輯器和終端機可能會
+給你兩種說法，而你不知道為什麼。
+
 ## 裝
 
 在 VS Code 的擴充套件裡搜 **Loophole**，或者：
@@ -78,10 +109,10 @@ after each wish: 3 → 2 → 18446744073709551615
 code --install-extension rayhuang2006.loophole
 ```
 
-## 要編譯器本身
+## 裝編譯器本體
 
-套件裡的編譯器只判你正在編輯的檔案。要在終端機跑（`--hunt` 讓機器自己去找洞、
-批次判整個資料夾）就裝本體：
+上一節的播放鍵需要它。沒有它，套件仍然會上色、會判、會給你 lens 和 hover——
+就是不能**執行**：
 
 ```bash
 curl -L -o loophole https://github.com/rayhuang2006/Loophole/releases/latest/download/loophole-macos-arm64
@@ -89,7 +120,15 @@ chmod +x loophole && sudo mv loophole /usr/local/bin/
 ```
 
 Linux 換成 `loophole-linux-x86_64`。或者 `git clone` 之後 `make`——
-一個 C++ 檔案，沒有任何相依。
+一個 C++ 檔案，沒有任何相依。裝在別的地方的話，設定 `loophole.path`。
+
+裝好之後終端機也是一等公民，而且有些事只有它做得到——
+`--hunt` 讓機器自己去把洞找出來、批次判一整個資料夾、
+用離開碼在 CI 裡擋 PR：
+
+```bash
+loophole --hunt w.wish && echo "滴水不漏"
+```
 
 ## 授權
 

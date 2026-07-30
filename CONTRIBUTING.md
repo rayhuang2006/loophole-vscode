@@ -27,7 +27,7 @@ npm run check      # 以上全部 + 確認沒有人手改生成物
 
 ## 測試測的是什麼
 
-`npm test` 跑四支，全部用真東西，沒有 fixture：
+`npm test` 跑五支，全部用真東西，沒有 fixture：
 
 **`grammar-check.mjs`** 跑的是 **`vscode-textmate` + `vscode-oniguruma`——VS Code
 本身用的 tokenizer**，不是只驗 JSON 合法。因為一份文法可以完全合法、
@@ -54,12 +54,20 @@ npm run check      # 以上全部 + 確認沒有人手改生成物
 從頭到尾是字串（`18446744073709551615` 一旦被 `Number()` 碰到就變成
 `...552000`），和寬度跟著 `widen` 走而不是宣告值。
 
+**`run-check.mjs`** 檢查指令怎麼組，和 problemMatcher 讀不讀得懂編譯器的錯誤。
+最重要的兩條：`--genie` 一定要被加上去（而且是拿真編譯器驗「換精靈會換判決」，
+不是驗字串），以及 matcher 的 regex 是對著**剛剛才產生的**真實診斷跑的。
+另外驗一個容易寫反的方向：`EXPLOIT` **不可以**被 matcher 撿成問題——
+它是成功，而一般編譯器的 matcher 寫法會把它當錯誤。
+
 **`extension-check.mjs`** 真的呼叫 `activate()`，對著一個假的 VS Code API，
 但編譯器是真的、`extension.js` 是真的。它證明的是「診斷有送到」：
 `activate` 不會拋、wasm 從 `context.extensionPath` 載得起來、
 `# genie:` 找得到檔案、範圍落在它指責的那段文字上、關掉檔案波浪線會消失。
 三個 provider 也在這裡被當成 VS Code 那樣呼叫一次——證明它們有註冊、
-讀的是快取的判決而不是再判一次。
+讀的是快取的判決而不是再判一次。執行那條路徑也在這裡：`child_process` 一起被
+攔截成假的，所以「沒裝 binary」「版本一樣」「版本不同」三種情況都測得到，
+而且在一台從來沒裝過編譯器的 CI runner 上也穩定。
 
 **沒有這一層，套件可以裝上去完全不動而其他檢查全綠**——
 這個專案已經以另一種形式出過一次這種貨：一個被快取住的 web worker，
@@ -139,6 +147,62 @@ src/assist.js              lens 寫什麼、hover 說什麼、補全給什麼
 診斷、CodeLens、hover、補全全部讀 `extension.js` 裡快取的**同一份** `--json`。
 兩個理由：三個視角不可能互相矛盾，而且滑一下鼠標不該讓編譯器再跑一次。
 判決更新時 `lensChanged.fire()` 叫 VS Code 重新拿 lens。
+
+## 執行
+
+環境式的功能（診斷、lens、hover、補全）全部走套件內含的 wasm。
+**「執行」不走 wasm，走使用者 PATH 上真正的 `loophole`，而且輸出到終端機。**
+
+```
+src/run.js          指令怎麼組。純函式，不 import vscode
+src/extension.js    loophole.run 命令 + TaskProvider
+package.json        播放鍵(editor/title/run)、taskDefinitions、problemMatcher
+```
+
+### 為什麼不 fallback 到 wasm
+
+沒裝本體的時候，播放鍵會直說並給安裝指令，**不會偷偷用內含的 wasm 代跑**。
+
+理由不是「怕它們判得不一樣」——`make wasm-check` 每次都在證明兩者逐字相同。
+理由是：偷偷代跑會讓「執行」這個**動作**在不同機器上是不同的事。
+而這個動作存在的意義就是它跟別人做的是同一件事。
+
+### `--genie` 不是可選的
+
+**編譯器不讀 `# genie:` 那行。** 那是 `make run` 和這個插件的慣例，不是語言的。
+一個寫了 `# genie: mortal.genie` 的願望，用 `loophole w.wish` 跑會報 `broke I3`
+（內建精靈），用 `loophole --genie mortal.genie w.wish` 跑會報 `broke Life`。
+
+所以 `run.js` 必須自己補上這個旗標，不然按下播放鍵會跟三吋之上的波浪線互相矛盾。
+`tools/run-check.mjs` 裡有一條直接用編譯器驗這件事——不是驗字串，是驗「換精靈
+真的會換判決」。
+
+### 版本偏移
+
+畫波浪線的是內含的 wasm，執行的是 PATH 上的 binary。**它們可能是不同的 build。**
+
+這不是假想：做這個功能的時候，開發機上裝的是 1.3.1，而套件帶的是 1.14.0。
+編輯器和終端機是兩個不同的編譯器，而沒有任何東西講過一句話。
+
+現在版本不同時會警告一次（一次，不是每次——每次都跳的警告等於沒有警告），
+但**不擋**：舊 binary 還是能跑，使用者也可能是刻意釘住的。
+
+### problemMatcher 是這個插件唯一可以讀散文的地方
+
+終端機吐的是文字，沒有別的東西可以解析，所以 `problemMatcher` 的 regex 必須讀
+`error:` 和 `-->` 那兩行。§10.1 說散文可以隨時改寫，所以這件事很危險——
+`tools/run-check.mjs` 因此拿**剛剛才由真編譯器產生的**輸出去比對，不用罐頭字串。
+不然哪天診斷格式改了，Problems 面板會安靜地變空。
+
+task 的 `ShellExecution` 會帶 `NO_COLOR=1`。編譯器認這個變數，而 task 跑在 pty 裡，
+不設的話它會把 ANSI escape 吐進 matcher 要讀的那幾行。
+播放鍵那條路徑**不設**，因為那是給人看的，有顏色比較好。
+
+### 只開單一檔案時沒有 task
+
+VS Code 的 task 是 workspace 範圍的，沒開資料夾就不會有。播放鍵不受影響
+（它是命令不是 task）。`tools/vscode-run.mjs` 因此會建一個暫存資料夾當工作區
+再啟動 VS Code——不然 task provider 看起來會像壞了，其實好好的。
 
 ### 呈現不能有損
 

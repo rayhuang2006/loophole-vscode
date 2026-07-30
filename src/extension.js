@@ -18,8 +18,10 @@
 
 const vscode = require('vscode');
 const path = require('path');
+const cp = require('child_process');
 const { toDiagnostics, GENIE } = require('./verdict.js');
 const assist = require('./assist.js');
+const run = require('./run.js');
 
 /** Milliseconds of quiet before a keystroke turns into a judgment. */
 const SETTLE = 250;
@@ -126,6 +128,9 @@ function activate(context) {
   // sentence. Read from the wasm rather than from `tools/keywords.json`, which
   // is a build input and is not shipped inside the package.
   let keywords = null;
+  // The bundled compiler's version, so Run can say when the binary on the PATH
+  // is a different build from the one drawing the squiggles.
+  let bundledVersion = null;
   let announcedFailure = false;
 
   const lensChanged = new vscode.EventEmitter();
@@ -140,6 +145,10 @@ function activate(context) {
         // is the correct degradation -- it must not take the extension down.
         try { keywords = JSON.parse(M.keywords()); }
         catch (e) { console.error('loophole: could not read --keywords', e); }
+      }
+      if (!bundledVersion) {
+        try { bundledVersion = M.versions().split('|')[0]; }
+        catch (e) { console.error('loophole: could not read versions()', e); }
       }
       return M;
     } catch (err) {
@@ -342,6 +351,191 @@ function activate(context) {
   );
 
   for (const d of vscode.workspace.textDocuments) judge(d);
+
+  activateRunning(context, () => bundledVersion);
+}
+
+// ---------------------------------------------------------------------------
+// Running.
+//
+// Everything above is ambient: it happens while you type and you never asked for
+// it. This is the other half -- the moment you stop and say "run it" -- and
+// without it a person can use this language without ever executing anything,
+// which is a strange thing for a language that executes.
+//
+// It goes to a terminal, running the REAL binary, for two reasons. The Python
+// and C/C++ extensions both put it there and neither uses an output panel. And
+// the bundled WebAssembly compiler must not quietly stand in: `make wasm-check`
+// proves the two judge identically, so a fallback would not lie about the
+// verdict -- but it would make "run" mean something different depending on the
+// machine, and the whole point of the act is that it is the same act everyone
+// else performs.
+// ---------------------------------------------------------------------------
+
+/** The configured executable. */
+const exePath = () =>
+  vscode.workspace.getConfiguration('loophole').get('path') || 'loophole';
+
+/**
+ * The version of the binary on the PATH, or null if there is no binary.
+ *
+ * Asking it its version is both the cheapest test that it exists and the answer
+ * to a question that turns out to matter -- see `warnIfSkewed`.
+ */
+function installedVersion(exe) {
+  try {
+    const out = cp.execFileSync(exe, ['--version'],
+                                { encoding: 'utf8', timeout: 5000 });
+    return (/loophole (\d+\.\d+\.\d+)/.exec(out) ?? [])[1] ?? 'unknown';
+  } catch {
+    return null;
+  }
+}
+
+const INSTALL =
+  'curl -L -o loophole https://github.com/rayhuang2006/Loophole/releases/latest/' +
+  'download/loophole-macos-arm64 && chmod +x loophole && sudo mv loophole /usr/local/bin/';
+
+async function offerToInstall(exe) {
+  const pick = await vscode.window.showErrorMessage(
+    `Loophole: '${exe}' is not on your PATH, so there is nothing to run. ` +
+    'The squiggles come from a compiler bundled with this extension; running ' +
+    'uses the real one.',
+    'Copy install command', 'Open releases');
+  if (pick === 'Copy install command') {
+    await vscode.env.clipboard.writeText(INSTALL);
+    vscode.window.showInformationMessage(
+      'Copied. Paste it into a terminal (swap the filename for your platform).');
+  } else if (pick === 'Open releases') {
+    vscode.env.openExternal(vscode.Uri.parse(
+      'https://github.com/rayhuang2006/Loophole/releases/latest'));
+  }
+}
+
+/**
+ * Two compilers judge this file: the bundled one that draws the squiggles, and
+ * the one on the PATH that Run executes. When they are different builds they may
+ * reach different verdicts, and the reader has no way to know why -- the editor
+ * says one thing, the terminal three inches below says another.
+ *
+ * This is not hypothetical. It was found by running the feature: the binary
+ * installed on the development machine was 1.3.1 while the package carried
+ * 1.14.0.
+ *
+ * A warning, not a refusal. An older binary still runs, the person may have
+ * pinned it deliberately, and stopping them would be worse than telling them.
+ * Once per session, and only when they actually differ.
+ */
+let warnedAboutSkew = false;
+function warnIfSkewed(exe, installed, bundled) {
+  if (warnedAboutSkew || !installed || !bundled || installed === bundled) return;
+  warnedAboutSkew = true;
+  vscode.window.showWarningMessage(
+    `Loophole: '${exe}' is ${installed}, but the squiggles come from the ` +
+    `${bundled} compiler bundled with this extension. If the terminal and the ` +
+    'editor disagree, that is why.',
+    'Copy update command')
+    .then((pick) => {
+      if (pick !== 'Copy update command') return;
+      vscode.env.clipboard.writeText(INSTALL);
+      vscode.window.showInformationMessage(
+        'Copied. Paste it into a terminal (swap the filename for your platform).');
+    });
+}
+
+/**
+ * What to run for a document: the file, and the genie it named.
+ *
+ * Paths are made relative to the folder the command will run in, so the line
+ * the reader sees is the line they could have typed themselves.
+ */
+function planFor(doc) {
+  const dir = path.dirname(doc.uri.fsPath);
+  const named = run.genieNameIn(doc.getText());
+  return {
+    cwd: dir,
+    file: path.basename(doc.uri.fsPath),
+    // `# genie:` is resolved relative to the wish, and `cwd` is that same
+    // directory, so the name as written is already correct here.
+    genie: named,
+  };
+}
+
+function activateRunning(context, bundledVersion) {
+  let terminal = null;
+
+  context.subscriptions.push(vscode.commands.registerCommand(
+    'loophole.run', async () => {
+      const doc = vscode.window.activeTextEditor?.document;
+      if (!doc || doc.languageId !== 'wish') {
+        vscode.window.showErrorMessage('Loophole: open a .wish file to run.');
+        return;
+      }
+      // Save first. Running a file the compiler cannot see the current state of
+      // would report on something other than what is on the screen.
+      if (doc.isDirty) await doc.save();
+
+      const exe = exePath();
+      const installed = installedVersion(exe);
+      if (!installed) return offerToInstall(exe);
+      warnIfSkewed(exe, installed, bundledVersion());
+
+      const { cwd, file, genie } = planFor(doc);
+      if (!terminal || terminal.exitStatus !== undefined) {
+        terminal = vscode.window.createTerminal({ name: 'Loophole', cwd });
+        context.subscriptions.push(terminal);
+      }
+      terminal.show(true);
+      // `sendText`, not a hidden child process: the command is the point. It is
+      // readable, it teaches the flags, and the up arrow runs it again.
+      terminal.sendText(run.commandFor({ exe, file, genie }));
+    }));
+
+  // A task, so ⌘⇧B works and so the compiler's diagnostics reach the Problems
+  // panel through the `loophole` problem matcher -- the same shape the C/C++
+  // extension uses, where IntelliSense annotates as you type and an invoked
+  // build feeds the panel separately.
+  const provider = {
+    provideTasks() {
+      const doc = vscode.window.activeTextEditor?.document;
+      if (!doc || doc.languageId !== 'wish') return [];
+      const { file, genie } = planFor(doc);
+      return [makeTask({ file, genie, cwd: path.dirname(doc.uri.fsPath) })];
+    },
+    resolveTask(task) {
+      const d = task.definition;
+      if (!d.file) return undefined;
+      return makeTask({ file: d.file, genie: d.genie ?? null,
+                        cwd: task.scope?.uri?.fsPath, definition: d });
+    },
+  };
+
+  function makeTask({ file, genie, cwd, definition = null }) {
+    const exe = exePath();
+    const task = new vscode.Task(
+      definition ?? { type: 'loophole', file, ...(genie ? { genie } : {}) },
+      vscode.TaskScope.Workspace,
+      genie ? `judge ${file} against ${genie}` : `judge ${file}`,
+      'loophole',
+      new vscode.ShellExecution(exe, run.argsFor({ file, genie }), {
+        cwd,
+        // Plain text for the matcher. The compiler honours NO_COLOR, and a task
+        // runs in a pty, so without this it would emit escape codes into the
+        // very lines the matcher has to read.
+        env: { NO_COLOR: '1' },
+      }),
+      '$loophole');
+    task.group = vscode.TaskGroup.Build;
+    // Exit 1 means an exploit was found, which is the good ending. Left as a
+    // failure, the editor would put a red banner on the result the language
+    // exists to produce.
+    task.presentationOptions = { reveal: vscode.TaskRevealKind.Always,
+                                 panel: vscode.TaskPanelKind.Dedicated };
+    return task;
+  }
+
+  context.subscriptions.push(
+    vscode.tasks.registerTaskProvider('loophole', provider));
 }
 
 function deactivate() {}

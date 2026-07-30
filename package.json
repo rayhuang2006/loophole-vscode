@@ -1,8 +1,8 @@
 {
   "name": "loophole",
   "displayName": "Loophole",
-  "description": "Syntax highlighting, inline diagnostics, CodeLens, hover and completion for the wish and genie languages.",
-  "version": "0.4.0",
+  "description": "Syntax highlighting, inline diagnostics, CodeLens, hover, completion and a run button for the wish and genie languages.",
+  "version": "0.5.0",
   "publisher": "rayhuang2006",
   "license": "MIT",
   "icon": "images/icon.png",
@@ -59,13 +59,87 @@
         "scopeName": "source.genie",
         "path": "./syntaxes/genie.tmLanguage.json"
       }
-    ]
+    ],
+    "commands": [
+      {
+        "command": "loophole.run",
+        "title": "Run this wish",
+        "category": "Loophole",
+        "icon": "$(play)"
+      }
+    ],
+    "menus": {
+      "editor/title/run": [
+        {
+          "command": "loophole.run",
+          "when": "resourceLangId == wish",
+          "group": "navigation@0"
+        }
+      ],
+      "commandPalette": [
+        {
+          "command": "loophole.run",
+          "when": "resourceLangId == wish"
+        }
+      ]
+    },
+    "taskDefinitions": [
+      {
+        "type": "loophole",
+        "required": [
+          "file"
+        ],
+        "properties": {
+          "file": {
+            "type": "string",
+            "description": "The .wish file to judge."
+          },
+          "genie": {
+            "type": "string",
+            "description": "A .genie to judge against. Defaults to the one the file's `# genie:` line names, or the compiler's built-in genie."
+          }
+        }
+      }
+    ],
+    "problemMatchers": [
+      {
+        "name": "loophole",
+        "owner": "loophole",
+        "source": "loophole",
+        "fileLocation": [
+          "autoDetect",
+          "${workspaceFolder}"
+        ],
+        "pattern": [
+          {
+            "regexp": "^error: (.*)$",
+            "message": 1
+          },
+          {
+            "regexp": "^\\s*--> (.*):(\\d+):(\\d+)$",
+            "file": 1,
+            "line": 2,
+            "column": 3
+          }
+        ]
+      }
+    ],
+    "configuration": {
+      "title": "Loophole",
+      "properties": {
+        "loophole.path": {
+          "type": "string",
+          "default": "loophole",
+          "markdownDescription": "The `loophole` executable used by **Run** and by build tasks. The bundled WebAssembly compiler handles the squiggles as you type; running goes to a terminal, and a terminal needs the real binary. Install it with the line in the README, or point this at a build of your own."
+        }
+      }
+    }
   },
   "scripts": {
     "keywords": "node tools/fetch-keywords.mjs",
     "wasm": "node tools/fetch-wasm.mjs",
     "gen": "node tools/gen-grammars.mjs",
-    "test": "node tools/grammar-check.mjs && node tools/diagnostics-check.mjs && node tools/assist-check.mjs && node tools/extension-check.mjs",
+    "test": "node tools/grammar-check.mjs && node tools/diagnostics-check.mjs && node tools/assist-check.mjs && node tools/run-check.mjs && node tools/extension-check.mjs",
     "check": "npm run gen && git diff --exit-code syntaxes/ && npm test && npm run test:editor",
     "test:editor": "node tools/vscode-run.mjs"
   },
