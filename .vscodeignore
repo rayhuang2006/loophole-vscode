@@ -7,3 +7,4 @@ node_modules/**
 images/logo.svg
 .gitignore
 .vscodeignore
+CONTRIBUTING.md
