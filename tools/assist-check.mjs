@@ -4,10 +4,16 @@
 // both come from the WebAssembly build that ships in the `.vsix`, so a change to
 // either upstream shows up here rather than being absorbed by a fixture.
 //
-// The property worth stating outright: **nothing in `assist.js` may invent
-// language knowledge.** Every sentence a hover shows has to be the compiler's
-// sentence, and the checks below assert that by comparing against
-// `--keywords` rather than against a string typed out here.
+// Two properties are worth stating outright.
+//
+// **Nothing in `assist.js` may invent language knowledge.** Every sentence a
+// hover shows has to be the compiler's sentence, and the checks below assert
+// that by comparing against `--keywords` rather than against a string typed out
+// here.
+//
+// **Nothing in `assist.js` may say less than the compiler distinguished.** See
+// "lossless presentation" at the bottom -- it is the more important of the two,
+// and it is the one that was missing.
 
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
@@ -213,6 +219,97 @@ const json = judge();
   check('names: a comment is not a person',
         names(withComment, null).people.join(',') === 'alice',
         JSON.stringify(names(withComment, null).people));
+}
+
+// --- lossless presentation -------------------------------------------------
+//
+// The editor may reword a verdict. It may not merge two of them.
+//
+// This is the failure the rest of this file cannot see, and it is quiet: the
+// compiler goes on computing `fooled` and `violated` perfectly, the JSON goes on
+// carrying both, and the reader -- who by then only ever looks at the lens --
+// stops being told there is a difference. `fooled` versus `violated` IS the
+// two-column design, which is the argument of the whole project. Losing it in
+// the last three inches would be losing it.
+//
+// So the property is injectivity, not equality: for any two programs the
+// COMPILER judged differently, the presentation must differ too. Nothing below
+// asserts what a label says, only that two different things do not end up
+// looking like one -- so rewording stays free, and collapsing does not.
+{
+  const G = M.defaultGenie();
+  const WORLD = 'register wishes : uint<2> = 3\n' +
+                'attribute breathing : uint<1> = 1\n' +
+                'people alice\n';
+
+  // One program per outcome the compiler can reach. `R2` of the built-in genie
+  // forbids `kill` at the `surface` layer, so an alias defeats it -- and adding
+  // an empty `everyone` turns that same exploit from violated into fooled,
+  // because the genie's universal is then vacuously true over nobody while
+  // alice is just as dead.
+  const corpus = {
+    refused:  `${WORLD}wish greedy { add wishes, 3 }\n`,
+    clean:    `${WORLD}wish shelf { widen wishes -> uint<64> }\n`,
+    violated: `${WORLD}wish tidy {\n    define mercy := kill\n    mercy alice\n}\n`,
+    fooled:   `${WORLD}wish tidy {\n    define mercy := kill\n` +
+              `    define everyone := { }\n    mercy alice\n}\n`,
+  };
+
+  // What the compiler distinguished, read off the judgment rather than assumed.
+  const compilerSignature = (j) => {
+    const w = (j?.wishes ?? [])[0];
+    if (!w) return 'nothing';
+    if (!w.legal) return 'refused';
+    const verdicts = [...new Set((w.invariants ?? [])
+      .map((v) => v.verdict).filter((v) => v !== 'holds'))].sort();
+    return verdicts.length ? `exploit:${verdicts.join(',')}` : 'clean';
+  };
+
+  const seen = new Map();   // compiler signature -> what the editor shows
+  for (const src of Object.values(corpus)) {
+    const j = judge(src, G);
+    const h = hover({ word: j?.wishes?.[0]?.wish, text: src, keywords, json: j });
+    seen.set(compilerSignature(j), {
+      lens: lenses(j).map((l) => l.title).join(' | '),
+      hover: h?.body ?? '',
+    });
+  }
+
+  // If a fixture stops producing what it is named after, this check quietly
+  // shrinks to three cases and still passes. Assert the corpus first, so the
+  // failure reads "you stopped exercising fooled" rather than saying nothing.
+  for (const sig of ['refused', 'clean', 'exploit:violated', 'exploit:fooled']) {
+    check(`corpus still reaches ${sig}`, seen.has(sig), [...seen.keys()].join(' / '));
+  }
+
+  const collide = (pick) => {
+    const byText = new Map();
+    for (const [sig, v] of seen) {
+      const text = pick(v);
+      if (byText.has(text)) {
+        return `${byText.get(text)} and ${sig} both look like "${text}"`;
+      }
+      byText.set(text, sig);
+    }
+    return null;
+  };
+
+  const lensCollision = collide((v) => v.lens);
+  check('a CodeLens never merges two verdicts', lensCollision === null, lensCollision);
+  const hoverCollision = collide((v) => v.hover);
+  check('a hover never merges two verdicts', hoverCollision === null, hoverCollision);
+
+  // And the distinction that is the argument of the project, named outright --
+  // "they differ somehow" would still be satisfied by two labels differing only
+  // in an invariant name the reader has no reason to be reading.
+  const vio = seen.get('exploit:violated');
+  const foo = seen.get('exploit:fooled');
+  if (vio && foo) {
+    const words = (s) => new Set(s.toLowerCase().match(/[a-z]+/g) ?? []);
+    const onlyInFooled = [...words(foo.lens)].filter((w) => !words(vio.lens).has(w));
+    check('and they differ in words, not just in an invariant name',
+          onlyInFooled.length > 0, `${vio.lens}   vs   ${foo.lens}`);
+  }
 }
 
 process.exit(failed);
