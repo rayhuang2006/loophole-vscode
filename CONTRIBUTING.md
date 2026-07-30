@@ -80,11 +80,25 @@ CI 另外做兩件事：確認 `syntaxes/` 就是生成器的產物，
 
 ## 發布
 
-```bash
-npx @vscode/vsce package                  # 產生 .vsix
-npx @vscode/vsce login rayhuang2006       # 需要 Azure DevOps 的 PAT
-npx @vscode/vsce publish
+**改 `package.json` 的 `version` 就是決定要發布。** 其餘全自動：
+
+```
+push 到 main  →  比對 package.json 和 Marketplace 上的版本
+                    ↓ 不同
+              重新生成文法 + 跑 tokenizer 測試  →  發布  →  打 tag
 ```
 
-PAT 要在 https://dev.azure.com/ 產生，**Organization 必須選 All accessible
-organizations**（選單一組織會發不出去），Scopes 展開全部之後勾 Marketplace → Manage。
+版號沒變的話什麼都不會發生，所以改 README 不會多出一個版本。
+`vsce show` 不需要認證，所以那個比對在動用 token 之前就完成了。
+
+發布用的是 `VSCE_PAT` 這個 repository secret。要重新產一個 PAT 的話：
+https://dev.azure.com/ → 設定 → Personal access tokens → New Token，
+**Organization 必須選 All accessible organizations**（選單一組織會發不出去），
+Scopes 展開全部之後勾 **Marketplace → Manage**。
+
+手動發布（不需要，但偶爾有用）：
+
+```bash
+npx @vscode/vsce package                  # 只產生 .vsix，不上傳
+npx @vscode/vsce publish --pat <token>
+```

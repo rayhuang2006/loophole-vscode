@@ -1,0 +1,83 @@
+name: Release
+
+# Bumping `version` in package.json is the act of deciding to publish.
+# Everything after it is mechanical.
+#
+# The alternative -- publishing on every push -- would put a new version on the
+# Marketplace for a typo in the README, and the version history there is
+# permanent. The alternative in the other direction, publishing by hand, is the
+# one that already went wrong upstream: six versions were bumped in the source
+# and never released, because the manual step is the one that gets forgotten.
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write        # to tag what was published
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with: { node-version: '20' }
+      - run: npm ci
+
+      - name: Is this version already on the Marketplace?
+        id: check
+        run: |
+          want=$(node -p "require('./package.json').version")
+          # `vsce show` needs no token, so this runs before anything is decided.
+          have=$(npx --yes @vscode/vsce show rayhuang2006.loophole --json 2>/dev/null \
+                 | node -e "
+                     let s='';process.stdin.on('data',d=>s+=d).on('end',()=>{
+                       try { console.log(JSON.parse(s).versions[0].version) }
+                       catch { console.log('none') }
+                     })" || echo none)
+          echo "want=$want" >> "$GITHUB_OUTPUT"
+          echo "have=$have" >> "$GITHUB_OUTPUT"
+          if [ "$want" = "$have" ]; then
+            echo "::notice::$want is already published; nothing to do."
+            echo "go=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "::notice::package.json says $want, the Marketplace has $have"
+            echo "go=yes" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Never publish something that has not been checked. These are the same
+      # two checks ci.yml runs, repeated here rather than depended on: a release
+      # that trusts another workflow to have run is a release that can go out
+      # untested when someone reorders the triggers.
+      - name: The grammars must be the generator's output
+        if: steps.check.outputs.go == 'yes'
+        run: |
+          npm run gen
+          git diff --exit-code syntaxes/ || {
+            echo "::error::syntaxes/ is not what tools/gen-grammars.mjs produces."
+            exit 1
+          }
+
+      - name: VS Code's own tokeniser must colour every reserved word
+        if: steps.check.outputs.go == 'yes'
+        run: npm test
+
+      - name: Publish
+        if: steps.check.outputs.go == 'yes'
+        env:
+          VSCE_PAT: ${{ secrets.VSCE_PAT }}
+        run: |
+          if [ -z "$VSCE_PAT" ]; then
+            echo "::error::the VSCE_PAT secret is not set on this repository"
+            exit 1
+          fi
+          npx --yes @vscode/vsce publish --pat "$VSCE_PAT"
+
+      - name: Tag what went out
+        if: steps.check.outputs.go == 'yes'
+        run: |
+          v="v${{ steps.check.outputs.want }}"
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -a "$v" -m "loophole-vscode ${{ steps.check.outputs.want }}"
+          git push origin "$v"
