@@ -124,6 +124,9 @@ function activate(context) {
   // read this instead of judging again: three views of one verdict cannot
   // disagree with each other, and a hover is not a reason to run the compiler.
   const judged = new Map();
+  // The last symbols each document parsed to. Separate from `judged` on purpose;
+  // see `setJudgment`.
+  const symbolsOf = new Map();
   // `--keywords` from the bundled compiler, so a hover shows the compiler's own
   // sentence. Read from the wasm rather than from `tools/keywords.json`, which
   // is a build input and is not shipped inside the package.
@@ -187,9 +190,9 @@ function activate(context) {
     // `checkGenie` answers with either an `error` object or an `ok` object;
     // `toDiagnostics` turns the first into one entry and the second into none.
     bag.set(doc.uri, toDiagnostics(json).map((d) => toVsDiagnostic(doc, d)));
-    // No wishes were judged, so there is nothing for a lens to say. Recorded
-    // anyway, so a hover in a genie still gets the keyword docs.
-    judged.set(doc.uri.toString(), null);
+    // No wishes were judged, so there is nothing for a lens to say -- but the
+    // genie's own rules and invariants are in here, and the outline wants them.
+    setJudgment(doc, json);
   }
 
   async function judgeWish(doc) {
@@ -235,9 +238,15 @@ function activate(context) {
     setJudgment(doc, json);
   }
 
-  /** Keep the judgment the other three features read, and refresh the lenses. */
+  /** Keep the judgment the other views read, and refresh the lenses. */
   function setJudgment(doc, json) {
     judged.set(doc.uri.toString(), json);
+    // Symbols are kept separately, and only when there are some. A file being
+    // typed into stops parsing several times a minute, and an outline that
+    // emptied itself every time would be unusable -- the last good one is a far
+    // better answer than none. A verdict is different: a stale verdict would be
+    // a lie about the file on screen, so `judged` is overwritten either way.
+    if (json?.symbols) symbolsOf.set(doc.uri.toString(), json.symbols);
     lensChanged.fire();
   }
 
@@ -327,6 +336,60 @@ function activate(context) {
       },
     }));
 
+  // The compiler reports a symbol's line and its name, not its column. Finding
+  // the column is searching one known line for one known word -- safe, unlike
+  // working out what the word means, which is why the line came from upstream.
+  function rangeOfName(doc, line, name) {
+    const l = Math.max(0, Math.min((line || 1) - 1, doc.lineCount - 1));
+    const text = doc.lineAt(l).text;
+    // Word boundaries matter: in `people alicia, alice`, a plain indexOf for
+    // `alice` finds it inside `alicia` and jumps four names too far left.
+    const m = new RegExp(`\\b${name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\b`)
+      .exec(text);
+    const col = m ? m.index : (text.length - text.trimStart().length);
+    return new vscode.Range(l, col, l, col + (m ? name.length : 1));
+  }
+
+  const SYMBOL_KIND = {
+    variable: vscode.SymbolKind.Variable, field: vscode.SymbolKind.Field,
+    constant: vscode.SymbolKind.Constant, function: vscode.SymbolKind.Function,
+    reference: vscode.SymbolKind.Variable, interface: vscode.SymbolKind.Interface,
+    class: vscode.SymbolKind.Class, property: vscode.SymbolKind.Property,
+  };
+
+  const symbolsFor = (doc) => symbolsOf.get(doc.uri.toString()) ?? [];
+
+  context.subscriptions.push(vscode.languages.registerDocumentSymbolProvider(
+    BOTH, {
+      provideDocumentSymbols(doc) {
+        const build = (n) => {
+          const end = Math.max(0, Math.min((n.endLine || n.line) - 1, doc.lineCount - 1));
+          const selection = rangeOfName(doc, n.line, n.name);
+          const full = new vscode.Range(selection.start.line, 0,
+                                        end, doc.lineAt(end).text.length);
+          const item = new vscode.DocumentSymbol(
+            n.name, n.detail ?? '',
+            SYMBOL_KIND[n.category] ?? vscode.SymbolKind.Variable,
+            full, selection);
+          item.children = (n.children ?? []).map(build);
+          return item;
+        };
+        return assist.outline({ symbols: symbolsFor(doc) }).map(build);
+      },
+    }));
+
+  context.subscriptions.push(vscode.languages.registerDefinitionProvider(
+    BOTH, {
+      provideDefinition(doc, position) {
+        const range = doc.getWordRangeAtPosition(position);
+        if (!range) return null;
+        const found = assist.definitionOf(
+          doc.getText(range), position.line + 1, { symbols: symbolsFor(doc) });
+        if (!found) return null;
+        return new vscode.Location(doc.uri, rangeOfName(doc, found.line, found.name));
+      },
+    }));
+
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument((d) => judge(d)),
     vscode.workspace.onDidChangeTextDocument((e) => {
@@ -347,6 +410,7 @@ function activate(context) {
       timers.delete(d.uri.toString());
       dependsOn.delete(d.uri.toString());
       judged.delete(d.uri.toString());
+      symbolsOf.delete(d.uri.toString());
     }),
   );
 

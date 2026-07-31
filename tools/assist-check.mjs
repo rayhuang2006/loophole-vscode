@@ -18,7 +18,8 @@
 import { createRequire } from 'node:module';
 const require = createRequire(import.meta.url);
 const createLoophole = require('../wasm/loophole.js');
-const { lenses, hover, completions, names } = require('../src/assist.js');
+const { lenses, hover, completions, names, outline, definitionOf } =
+  require('../src/assist.js');
 
 const M = await createLoophole();
 const keywords = JSON.parse(M.keywords());
@@ -310,6 +311,134 @@ const json = judge();
     check('and they differ in words, not just in an invariant name',
           onlyInFooled.length > 0, `${vio.lens}   vs   ${foo.lens}`);
   }
+}
+
+// --- outline and go-to-definition ------------------------------------------
+// Navigation, not results: these say where things are, never what your program
+// did. That is why they were safe to add at all -- see "環境式回答會不會" in
+// CONTRIBUTING. What is checked here is that the positions and the nesting come
+// from the compiler's `symbols` and are not being guessed.
+{
+  const G = M.defaultGenie();
+  const SRC = [
+    'register  wishes    : uint<2> = 3',   // 1
+    'attribute breathing : uint<4> = 15',  // 2
+    'people    alicia,',                   // 3   -- deliberately wrapped, and
+    '          alice',                     // 4      `alice` is inside `alicia`
+    '',                                    // 5
+    'wish tidy {',                         // 6
+    '    define mercy := kill',            // 7
+    '    mercy alice',                     // 8
+    '}',                                   // 9
+    '',
+  ].join('\n');
+  const j = judge(SRC, G);
+
+  const tree = outline(j);
+  const kinds = tree.map((n) => `${n.kind}:${n.name}`);
+  check('outline: declarations in source order',
+        kinds.join(' ') ===
+        'register:wishes attribute:breathing person:alicia person:alice wish:tidy',
+        kinds.join(' '));
+
+  const tidy = tree.find((n) => n.name === 'tidy');
+  check('outline: a define nests under the wish that made it',
+        tidy?.children.length === 1 && tidy.children[0].name === 'mercy',
+        JSON.stringify(tidy?.children));
+  check('outline: and carries what it binds to',
+        tidy?.children[0]?.detail === 'kill', tidy?.children[0]?.detail);
+  check('outline: a wish spans its body, so it can fold',
+        tidy?.endLine > tidy?.line, `${tidy?.line}..${tidy?.endLine}`);
+  check('outline: a register carries its width',
+        tree[0]?.detail === 'uint<2>', tree[0]?.detail);
+
+  // A wrapped `people` is the case that catches a parser recording one line for
+  // the whole declaration.
+  const alicia = tree.find((n) => n.name === 'alicia');
+  const alice = tree.find((n) => n.name === 'alice');
+  check('outline: wrapped `people` keeps each name on its own line',
+        alicia?.line === 3 && alice?.line === 4,
+        `${alicia?.line} / ${alice?.line}`);
+
+  // Every symbol's line must actually contain its name. This is the property,
+  // rather than a count -- a parser that put every person on line 1 still emits
+  // the right number of people.
+  const lines = SRC.split('\n');
+  const misplaced = (j?.symbols ?? [])
+    .filter((s) => !lines[s.line - 1]?.includes(s.name));
+  check('outline: every symbol sits on a line containing its name',
+        misplaced.length === 0, JSON.stringify(misplaced));
+
+  // The one that makes this worth having in THIS language: following an alias.
+  const d = definitionOf('mercy', 8, j);
+  check('definition: `mercy` leads to its define', d?.line === 7, JSON.stringify(d));
+  check('definition: and says it means kill', d?.detail === 'kill', d?.detail);
+
+  check('definition: a register resolves to its declaration',
+        definitionOf('wishes', 7, j)?.line === 1);
+  check('definition: an unknown word resolves to nothing',
+        definitionOf('zzz', 8, j) === null);
+
+  // Rebinding: §6.2 says a define binds for the remainder of the program, so the
+  // answer depends on where the question is asked.
+  const rebound = judge([
+    'register wishes : uint<2> = 3',
+    'attribute breathing : uint<4> = 15',
+    'people alice',
+    'wish one {',
+    '    define mercy := kill',      // 5
+    '    mercy alice',               // 6
+    '}',
+    'wish two {',
+    '    define mercy := revive',    // 9
+    '    mercy alice',               // 10
+    '}',
+    '',
+  ].join('\n'), G);
+  check('definition: the binding in force at line 6 is the first',
+        definitionOf('mercy', 6, rebound)?.line === 5,
+        JSON.stringify(definitionOf('mercy', 6, rebound)));
+  check('definition: at line 10 it is the second',
+        definitionOf('mercy', 10, rebound)?.line === 9,
+        JSON.stringify(definitionOf('mercy', 10, rebound)));
+  check('definition: and the two mean different things',
+        definitionOf('mercy', 6, rebound)?.detail === 'kill' &&
+        definitionOf('mercy', 10, rebound)?.detail === 'revive');
+
+  // A genie has its own symbols, through `--check-genie`. Written out here
+  // rather than reusing the built-in one, which declares no concepts -- a check
+  // that never sees a `concept` would not notice the parser losing them.
+  const GENIE3 = [
+    'counter wishes',
+    'toll    1',
+    '',
+    'concept dead(p) := p.breathing == 0',
+    '',
+    'rule NoKilling {',
+    '    layer   surface',
+    '    forbid  kill',
+    '    because "that word is not spoken here"',
+    '}',
+    '',
+    'invariant Life {',
+    '    check all p in people: not dead(p)',
+    '    label "nobody dies"',
+    '}',
+    '',
+  ].join('\n');
+  const gj = (() => {
+    const r = M.checkGenie(GENIE3);
+    try { return JSON.parse(r.json); } catch { return null; }
+  })();
+  check('the genie fixture parses', gj?.genie?.ok === true, JSON.stringify(gj?.error));
+  const gk = outline(gj).map((n) => n.kind);
+  check('outline: a genie lists its concepts, rules and invariants',
+        gk.includes('concept') && gk.includes('rule') && gk.includes('invariant'),
+        gk.join(','));
+  check('outline: a rule carries its layer',
+        outline(gj).some((n) => n.kind === 'rule' &&
+                                ['surface', 'ast'].includes(n.detail)),
+        JSON.stringify(outline(gj).filter((n) => n.kind === 'rule')));
 }
 
 process.exit(failed);

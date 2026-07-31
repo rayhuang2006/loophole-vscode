@@ -55,6 +55,14 @@ class CodeLens {
 class CompletionItem {
   constructor(label, kind) { Object.assign(this, { label, kind }); }
 }
+class DocumentSymbol {
+  constructor(name, detail, kind, range, selectionRange) {
+    Object.assign(this, { name, detail, kind, range, selectionRange, children: [] });
+  }
+}
+class Location {
+  constructor(uri, range) { Object.assign(this, { uri, range }); }
+}
 class EventEmitter {
   constructor() { this.listeners = []; }
   get event() { return (f) => (this.listeners.push(f), { dispose() {} }); }
@@ -134,7 +142,14 @@ const vscode = {
     registerHoverProvider: (_s, p) => (providers.hover = p, { dispose() {} }),
     registerCompletionItemProvider: (_s, p) =>
       (providers.completion = p, { dispose() {} }),
+    registerDocumentSymbolProvider: (_s, p) =>
+      (providers.symbols = p, { dispose() {} }),
+    registerDefinitionProvider: (_s, p) =>
+      (providers.definition = p, { dispose() {} }),
   },
+  DocumentSymbol, Location,
+  SymbolKind: { Variable: 12, Field: 7, Constant: 13, Function: 11,
+                Interface: 10, Class: 4, Property: 6 },
   Task, ShellExecution,
   TaskScope: { Workspace: 1 },
   TaskGroup: { Build: 'build' },
@@ -352,6 +367,56 @@ if (providers.completion) {
 // compiler does not read the `# genie:` comment, so a task that omitted it would
 // judge the file against the built-in genie and disagree with the squiggles
 // three inches above it.
+// --- outline and go-to-definition ------------------------------------------
+check('a symbol provider was registered', !!providers.symbols);
+check('a definition provider was registered', !!providers.definition);
+
+if (providers.symbols) {
+  const tree = providers.symbols.provideDocumentSymbols(wishDoc);
+  const names = tree.map((s) => s.name);
+  check('outline: the declarations and wishes are there',
+        names.join(' ') === 'wishes greedy humble', names.join(' '));
+  // `wishes` is on line index 1 and the name starts at column 9.
+  check('outline: the selection range lands on the name itself',
+        tree[0]?.selectionRange.start.line === 1 &&
+        tree[0]?.selectionRange.start.character === 9,
+        JSON.stringify(tree[0]?.selectionRange));
+  check('outline: a wish spans its body so it can fold',
+        tree[1]?.range.end.line > tree[1]?.range.start.line,
+        JSON.stringify(tree[1]?.range));
+}
+
+if (providers.definition) {
+  // `wishes` on the `sub wishes, 3` line jumps to its `register`.
+  const loc = providers.definition.provideDefinition(wishDoc, { line: 8, character: 10 });
+  check('definition: a register resolves to its declaration',
+        loc?.range.start.line === 1, JSON.stringify(loc?.range));
+  check('definition: nothing under blank space',
+        providers.definition.provideDefinition(wishDoc, { line: 2, character: 0 }) === null);
+}
+
+// The outline must survive the file not parsing. Someone typing breaks the file
+// several times a minute, and a tree that emptied itself each time would be
+// useless -- the last good one is a far better answer than none. A verdict is
+// different and is deliberately NOT kept: a stale verdict would be a lie about
+// what is on screen.
+{
+  const broken = doc(wishPath, WISH.replace('sub wishes, 3', 'sub wishes, 3;'), 'wish');
+  docs[1] = broken;
+  await new Promise((r) => { handlers.change.forEach((f) => f({ document: broken }));
+                             setTimeout(r, 1500); });
+  const stillThere = providers.symbols.provideDocumentSymbols(broken);
+  check('outline: survives the file not parsing', stillThere.length === 3,
+        stillThere.map((s) => s.name).join(' '));
+  const bag = bags.get(wishPath);
+  check('but the diagnostics do update, to the error',
+        bag?.length === 1 && bag[0].severity === 0,
+        JSON.stringify(bag?.map((d) => d.severity)));
+  docs[1] = wishDoc;
+  await new Promise((r) => { handlers.change.forEach((f) => f({ document: wishDoc }));
+                             setTimeout(r, 1500); });
+}
+
 check('nothing went wrong up to here', errors.length === 0, errors.join(' | '));
 check('a run command was registered', commands.has('loophole.run'));
 check('a task provider was registered', !!providers.task);

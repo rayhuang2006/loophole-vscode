@@ -2,7 +2,7 @@
   "name": "loophole",
   "displayName": "Loophole",
   "description": "Syntax highlighting, inline diagnostics, CodeLens, hover, completion and a run button for the wish and genie languages.",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "publisher": "rayhuang2006",
   "license": "MIT",
   "icon": "images/icon.png",

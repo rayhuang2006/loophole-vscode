@@ -261,6 +261,32 @@ async function run() {
        'the editor\n  saw: ' + JSON.stringify(t.execution?.args));
 
   console.log('  ok   VS Code registers the run command and finds the task');
+
+  // --- outline and go-to-definition ----------------------------------------
+  // Through VS Code's own commands, which is the only way to know the providers
+  // are reachable for these languages rather than merely constructed.
+  let symbols = [];
+  for (let i = 0; i < 40 && symbols.length < 3; i++) {
+    await wait(250);
+    symbols = await vscode.commands.executeCommand(
+      'vscode.executeDocumentSymbolProvider', doc.uri) ?? [];
+  }
+  must(symbols.length === 3,
+       'VS Code must get an outline\n  saw: ' +
+       JSON.stringify(symbols.map((s) => s.name)));
+  must(symbols.some((s) => s.name === 'humble'),
+       'the outline must list the wishes\n  saw: ' +
+       JSON.stringify(symbols.map((s) => s.name)));
+
+  // `sub wishes, 3` is line index 8; `wishes` starts at character 8.
+  const defs = await vscode.commands.executeCommand(
+    'vscode.executeDefinitionProvider', doc.uri, new vscode.Position(8, 10));
+  must(defs?.length >= 1,
+       'go to definition must find the register\n  saw: ' + JSON.stringify(defs));
+  must(defs[0].range.start.line === 1,
+       'and land on the `register` line\n  saw: ' + JSON.stringify(defs[0].range));
+
+  console.log('  ok   VS Code reaches the outline and definition providers');
 }
 
 module.exports = { run };

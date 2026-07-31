@@ -233,4 +233,76 @@ function completions({ linePrefix = '', languageId = 'wish',
   return out;
 }
 
-module.exports = { lenses, hover, completions, names };
+// ---------------------------------------------------------------------------
+// Outline and go-to-definition.
+//
+// Both read `symbols` from the compiler (1.15.0). Navigation, not results --
+// which is why they are safe to add: they help you move around the text and
+// tell you nothing about what your program did, so they take nothing away from
+// the reason to run it.
+//
+// The positions come from the compiler and not from a regular expression here,
+// for one reason above all others. Following `mercy` to `define mercy := kill`
+// is the aliasing axis, and working out what a name denotes is resolution --
+// the compiler's job. An editor that guessed would be a second, quieter
+// implementation of the half of the language this project is about.
+// ---------------------------------------------------------------------------
+
+/** Icon-ish category, mapped to the editor's own vocabulary by `extension.js`. */
+const SYMBOL_KIND = {
+  register: 'variable', attribute: 'field', person: 'constant',
+  wish: 'function', define: 'reference',
+  concept: 'interface', rule: 'class', invariant: 'property',
+};
+
+/**
+ * The outline tree. Definitions nest under the wish that made them -- `parent`
+ * says which -- because a `define` is a statement inside a body, and a flat list
+ * would put it beside the wishes rather than inside one.
+ */
+function outline(json) {
+  const syms = json?.symbols ?? [];
+  const roots = [];
+  const byWish = new Map();
+
+  for (const s of syms) {
+    if (s.parent) continue;
+    const node = { ...s, kind: s.kind, category: SYMBOL_KIND[s.kind] ?? 'variable',
+                   children: [] };
+    roots.push(node);
+    if (s.kind === 'wish') byWish.set(s.name, node);
+  }
+  for (const s of syms) {
+    if (!s.parent) continue;
+    const node = { ...s, category: SYMBOL_KIND[s.kind] ?? 'variable', children: [] };
+    const owner = byWish.get(s.parent);
+    (owner ? owner.children : roots).push(node);
+  }
+  return roots;
+}
+
+/**
+ * Where a name was declared.
+ *
+ * A `define` is rebindable and binds "for the remainder of the program" (§6.2),
+ * so when a name has several the answer is the last one at or above the line
+ * asking -- which is what the compiler would have resolved at that point. That
+ * is a scoping rule, not a resolution: which binding is in force, not what it
+ * denotes. What it denotes is already in `detail`, put there by the compiler.
+ *
+ * @param {string} word
+ * @param {number} line  1-based, where the question was asked
+ */
+function definitionOf(word, line, json) {
+  const named = (json?.symbols ?? []).filter((s) => s.name === word);
+  if (!named.length) return null;
+
+  const before = named.filter((s) => s.line <= line);
+  // Prefer the nearest binding at or above; otherwise the first one, so a name
+  // used above its declaration still goes somewhere useful rather than nowhere.
+  const pick = before.length ? before[before.length - 1] : named[0];
+  return { ...pick, category: SYMBOL_KIND[pick.kind] ?? 'variable' };
+}
+
+module.exports = { lenses, hover, completions, names, outline, definitionOf,
+                   SYMBOL_KIND };
