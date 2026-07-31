@@ -390,6 +390,29 @@ function activate(context) {
       },
     }));
 
+  // Formatting is a text tool, not a result -- it tells you nothing about what
+  // your program did -- so it belongs in the ambient layer and runs on the
+  // bundled compiler. Requiring the native binary to tidy a file would make
+  // format-on-save fail on a machine that has not installed it, for no gain:
+  // the same canonical form comes out of either build.
+  context.subscriptions.push(
+    vscode.languages.registerDocumentFormattingEditProvider(BOTH, {
+      async provideDocumentFormattingEdits(doc) {
+        const M = await loadOrWarn();
+        if (!M) return [];
+        let out;
+        try { out = M.format(doc.getText(), doc.languageId === 'genie'); }
+        catch (err) { console.error('loophole: format threw', err); return []; }
+        // The compiler answers with nothing when the file does not parse. Leave
+        // it exactly as it is -- reformatting a half-written file would mean
+        // guessing at what the author was about to type.
+        if (!out || out === doc.getText()) return [];
+        const whole = new vscode.Range(
+          0, 0, doc.lineCount - 1, doc.lineAt(doc.lineCount - 1).text.length);
+        return [vscode.TextEdit.replace(whole, out)];
+      },
+    }));
+
   context.subscriptions.push(
     vscode.workspace.onDidOpenTextDocument((d) => judge(d)),
     vscode.workspace.onDidChangeTextDocument((e) => {

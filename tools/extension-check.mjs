@@ -63,6 +63,10 @@ class DocumentSymbol {
 class Location {
   constructor(uri, range) { Object.assign(this, { uri, range }); }
 }
+class TextEdit {
+  constructor(range, newText) { Object.assign(this, { range, newText }); }
+  static replace(range, newText) { return new TextEdit(range, newText); }
+}
 class EventEmitter {
   constructor() { this.listeners = []; }
   get event() { return (f) => (this.listeners.push(f), { dispose() {} }); }
@@ -146,8 +150,10 @@ const vscode = {
       (providers.symbols = p, { dispose() {} }),
     registerDefinitionProvider: (_s, p) =>
       (providers.definition = p, { dispose() {} }),
+    registerDocumentFormattingEditProvider: (_s, p) =>
+      (providers.format = p, { dispose() {} }),
   },
-  DocumentSymbol, Location,
+  DocumentSymbol, Location, TextEdit,
   SymbolKind: { Variable: 12, Field: 7, Constant: 13, Function: 11,
                 Interface: 10, Class: 4, Property: 6 },
   Task, ShellExecution,
@@ -415,6 +421,32 @@ if (providers.definition) {
   docs[1] = wishDoc;
   await new Promise((r) => { handlers.change.forEach((f) => f({ document: wishDoc }));
                              setTimeout(r, 1500); });
+}
+
+// --- formatting -----------------------------------------------------------
+// A text tool, so it runs on the bundled compiler and needs no binary on the
+// PATH. The decision worth pinning: a file that does not parse is returned
+// untouched -- reformatting a half-written file means guessing at what the
+// author was about to type.
+check('a formatting provider was registered', !!providers.format);
+if (providers.format) {
+  const messy = doc(wishPath, 'register   wishes : uint<2> = 3\nwish   w {  sub wishes, 3  }\n', 'wish');
+  const edits = await providers.format.provideDocumentFormattingEdits(messy);
+  check('formatting: one edit replacing the file', edits.length === 1, edits.length);
+  check('formatting: a one-line body is expanded',
+        /wish w \{\n    sub wishes, 3\n\}/.test(edits[0]?.newText ?? ''),
+        JSON.stringify(edits[0]?.newText));
+
+  const broken = doc(wishPath, 'register wishes : uint<2> = 3\nwish x { sub wishes, 1; }\n', 'wish');
+  check('formatting: a file that does not parse is left alone',
+        (await providers.format.provideDocumentFormattingEdits(broken)).length === 0);
+
+  // Already canonical: no edit at all, so an editor does not mark the file
+  // dirty every time it is saved.
+  const tidy = doc(wishPath, 'register wishes : uint<2> = 3\n\nwish w {\n    sub wishes, 3\n}\n', 'wish');
+  check('formatting: an already-canonical file produces no edit',
+        (await providers.format.provideDocumentFormattingEdits(tidy)).length === 0,
+        JSON.stringify((await providers.format.provideDocumentFormattingEdits(tidy))[0]?.newText));
 }
 
 check('nothing went wrong up to here', errors.length === 0, errors.join(' | '));

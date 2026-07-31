@@ -27,7 +27,7 @@ npm run check      # 以上全部 + 確認沒有人手改生成物
 
 ## 測試測的是什麼
 
-`npm test` 跑五支，全部用真東西，沒有 fixture：
+`npm test` 跑六支，全部用真東西，沒有 fixture：
 
 **`grammar-check.mjs`** 跑的是 **`vscode-textmate` + `vscode-oniguruma`——VS Code
 本身用的 tokenizer**，不是只驗 JSON 合法。因為一份文法可以完全合法、
@@ -60,14 +60,21 @@ npm run check      # 以上全部 + 確認沒有人手改生成物
 另外驗一個容易寫反的方向：`EXPLOIT` **不可以**被 matcher 撿成問題——
 它是成功，而一般編譯器的 matcher 寫法會把它當錯誤。
 
+**`format-check.mjs`** 檢查編輯器這一側的格式化。格式化器本身在上游，
+它的兩條性質（冪等、判決不變）也在上游驗；這裡驗的是那個唯一的編輯器決定——
+**解析不了的檔案原封不動**。順便盯一個很容易寫反的地方：
+`format(text, isGenie)` 那個旗標搞反的話，精靈會被當成願望格式化、
+解析失敗、安靜地回空字串——看起來就跟「已經是正規形式」一模一樣。
+
 **`extension-check.mjs`** 真的呼叫 `activate()`，對著一個假的 VS Code API，
 但編譯器是真的、`extension.js` 是真的。它證明的是「診斷有送到」：
 `activate` 不會拋、wasm 從 `context.extensionPath` 載得起來、
 `# genie:` 找得到檔案、範圍落在它指責的那段文字上、關掉檔案波浪線會消失。
-五個 provider（lens、hover、補全、大綱、跳定義）也在這裡被當成 VS Code 那樣
+六個 provider（lens、hover、補全、大綱、跳定義、格式化）也在這裡被當成 VS Code 那樣
 呼叫一次——證明它們有註冊、讀的是快取的判決而不是再判一次。
-還有一條專門盯著「檔案暫時解析不了的時候大綱不會清空，但診斷會更新成錯誤」。執行那條路徑也在這裡：`child_process` 一起被
-攔截成假的，所以「沒裝 binary」「版本一樣」「版本不同」三種情況都測得到，
+還有一條專門盯著「檔案暫時解析不了的時候大綱不會清空，但診斷會更新成錯誤」。
+
+執行那條路徑也在這裡：`child_process` 一起被攔截成假的，所以「沒裝 binary」「版本一樣」「版本不同」三種情況都測得到，
 而且在一台從來沒裝過編譯器的 CI runner 上也穩定。
 
 **沒有這一層，套件可以裝上去完全不動而其他檢查全綠**——
@@ -139,6 +146,7 @@ src/extension.js           讀檔、呼叫、放範圍、快取判決。膠水
         ↓  ↓
 src/verdict.js             決定什麼算問題（診斷）
 src/assist.js              lens / hover / 補全 / 大綱 / 跳定義
+src/run.js                 執行的指令怎麼組
 ```
 
 **`verdict.js` 和 `assist.js` 都刻意不依賴 VS Code。** 這個功能真正在「決定事情」
@@ -169,6 +177,18 @@ src/run.js          指令怎麼組。純函式，不 import vscode
 src/extension.js    loophole.run 命令 + TaskProvider
 package.json        播放鍵(editor/title/run)、taskDefinitions、problemMatcher
 ```
+
+### 格式化器走 wasm，執行走本體
+
+看起來矛盾，其實是同一條規則的兩邊：**格式化是文字工具，執行是動作。**
+
+格式化不告訴你程式做了什麼，所以它屬於環境層，跟診斷一樣用內含的 wasm——
+要求裝了本體才能整理排版，會讓 format-on-save 在沒裝的機器上直接失效，
+而換來的是零（兩邊產出的正規形式一模一樣）。
+
+編輯器這一側只有一個決定：**解析不了的檔案原封不動。**
+編譯器在那種情況回空字串，而 provider 回空的編輯清單。
+重排一個寫到一半的檔案等於猜作者接下來要打什麼。
 
 ### 為什麼不 fallback 到 wasm
 

@@ -287,6 +287,44 @@ async function run() {
        'and land on the `register` line\n  saw: ' + JSON.stringify(defs[0].range));
 
   console.log('  ok   VS Code reaches the outline and definition providers');
+
+  // --- formatting -----------------------------------------------------------
+  // Asked the way the other providers are asked, through VS Code's own command.
+  // `editor.action.formatDocument` is the interactive one and depends on which
+  // formatter the workspace has been told to prefer; this asks the provider
+  // directly, which is the question that matters here -- is it reachable for
+  // this language at all.
+  const messyPath = path.join(dir, 'messy.wish');
+  fs.writeFileSync(messyPath,
+    'register   wishes : uint<2> = 3\nwish   w {  sub wishes, 3  }\n');
+  const messy = await vscode.workspace.openTextDocument(messyPath);
+  await vscode.window.showTextDocument(messy);
+
+  let edits = [];
+  for (let i = 0; i < 40 && !edits.length; i++) {
+    await wait(250);
+    edits = await vscode.commands.executeCommand(
+      'vscode.executeFormatDocumentProvider', messy.uri, {
+        tabSize: 4, insertSpaces: true,
+      }) ?? [];
+  }
+  // NOT `edits.length === 1`. The provider returns one edit replacing the whole
+  // file; VS Code turns that into a minimal diff before handing it back, so the
+  // count is its business, not ours. What matters is what applying them gives.
+  must(edits.length > 0,
+       'VS Code must reach the formatting provider\n  saw: ' + JSON.stringify(edits));
+
+  const apply = new vscode.WorkspaceEdit();
+  for (const e of edits) apply.replace(messy.uri, e.range, e.newText);
+  await vscode.workspace.applyEdit(apply);
+
+  const formatted = messy.getText();
+  must(/^register wishes : uint<2> = 3\n/.test(formatted),
+       'formatting must tidy the declaration\n  saw: ' + JSON.stringify(formatted));
+  must(/wish w \{\n    sub wishes, 3\n\}/.test(formatted),
+       'formatting must expand the one-line body\n  saw: ' + JSON.stringify(formatted));
+
+  console.log('  ok   VS Code reaches the formatting provider');
 }
 
 module.exports = { run };
